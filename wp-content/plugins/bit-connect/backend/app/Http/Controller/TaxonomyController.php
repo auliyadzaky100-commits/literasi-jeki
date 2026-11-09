@@ -1,0 +1,178 @@
+<?php
+
+namespace BitApps\BitConnect\Http\Controller;
+
+// Prevent direct script access
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+use BitApps\BitConnect\Config;
+use BitApps\BitConnect\Deps\BitApps\WPKit\Http\Response;
+use BitApps\BitConnect\Enum\Taxonomies;
+use BitApps\BitConnect\Http\Requests\ApproveTermRequest;
+use BitApps\BitConnect\Http\Requests\GetTaxonomiesRequest;
+use BitApps\BitConnect\Http\Requests\MergeTermsRequest;
+use BitApps\BitConnect\Http\Requests\ReorderTermsRequest;
+use BitApps\BitConnect\Services\ExtensionPoints;
+use BitApps\BitConnect\Services\TagApprovalService;
+use BitApps\BitConnect\Services\TermMergeService;
+use BitApps\BitConnect\Services\TermOrderService;
+use BitApps\BitConnect\Services\TopicTaxonomies;
+
+final class TaxonomyController
+{
+    /**
+     * Get all taxonomies for the bit-connect post type.
+     *
+     * @return Response
+     */
+    public function getTaxonomies(GetTaxonomiesRequest $_request) // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
+    {
+        $taxonomies = get_object_taxonomies(Config::SLUG, 'objects');
+
+        if (empty($taxonomies)) {
+            return Response::success([]);
+        }
+
+        $data = [];
+        foreach ($taxonomies as $taxonomy) {
+            $terms = get_terms(
+                [
+                    'taxonomy'   => $taxonomy->name,
+                    'hide_empty' => false,
+                ]
+            );
+
+            if (is_wp_error($terms)) {
+                $data[$taxonomy->name] = [];
+
+                continue;
+            }
+
+            // A tag a member suggested is not offered until it is approved.
+            if ($taxonomy->name === Taxonomies::TAGS->value) {
+                $pending = TagApprovalService::pendingIds();
+                $terms = array_values(array_filter(
+                    $terms,
+                    static fn ($term): bool => !\in_array((int) $term->term_id, $pending, true)
+                ));
+            }
+
+            // Nor a term a plugin keeps from this reader.
+            $terms = ExtensionPoints::portalTerms($terms, $taxonomy->name);
+
+            // Sorted here rather than in the clients: this payload carries no
+            // order meta, and it is the single read path the portal's filters
+            // and the topic form all go through.
+            if (TermOrderService::isOrderable($taxonomy->name)) {
+                $terms = TermOrderService::sort($terms);
+            }
+
+            // Icons ride along for the taxonomies that have them, so the portal
+            // sider can list terms with their artwork. get_terms() has
+            // already primed the term meta cache, so these reads cost no query.
+            $hasIcons = \in_array($taxonomy->name, [Taxonomies::STAGES->value, Taxonomies::STATUSES->value], true)
+                || (TopicTaxonomies::forTaxonomy($taxonomy->name)['icons'] ?? false);
+
+            // Names are stored escaped ("API &amp; Integrations"); JSON wants the text.
+            $termsData = [];
+            foreach ($terms as $term) {
+                $termData = [
+                    'id'     => $term->term_id,
+                    'name'   => wp_specialchars_decode($term->name, ENT_QUOTES),
+                    'slug'   => $term->slug,
+                    'count'  => $term->count,
+                    'parent' => $term->parent,
+                    // What the archive page says under the term's name, and
+                    // the same words the server put in that page's meta
+                    // description — see SeoMeta::forArchive().
+                    'description' => wp_strip_all_tags((string) $term->description),
+                ];
+
+                if ($hasIcons) {
+                    $termData['meta'] = [
+                        'bit_connect_icon_url'      => (string) get_term_meta($term->term_id, 'bit_connect_icon_url', true),
+                        'bit_connect_icon_dark_url' => (string) get_term_meta($term->term_id, 'bit_connect_icon_dark_url', true),
+                    ];
+                }
+
+                $termsData[] = $termData;
+            }
+
+            $data[$taxonomy->name] = $termsData;
+        }
+
+        return Response::success($data);
+    }
+
+    /**
+     * Approve a tag a member suggested — see TagApprovalService.
+     */
+    public function approve(ApproveTermRequest $request)
+    {
+        $validated = $request->validated();
+        $result = TagApprovalService::approve((int) $validated['id']);
+
+        if (is_wp_error($result)) {
+            return Response::error([], 422)->message($result->get_error_message());
+        }
+
+        return Response::success(['id' => (int) $validated['id']]);
+    }
+
+    /**
+     * Fold one tag into another — see TermMergeService.
+     *
+     * Its own route for the same reason ordering has one: core's terms
+     * endpoint can delete a term, but not re-file what was under it first.
+     */
+    public function merge(MergeTermsRequest $request)
+    {
+        $taxonomy = $request->mergeableTaxonomy();
+
+        if ($taxonomy === '') {
+            return Response::error('This taxonomy cannot be merged.', 400);
+        }
+
+        $validated = $request->validated();
+        $result = TermMergeService::merge($taxonomy, (int) $validated['from'], (int) $validated['into']);
+
+        if (is_wp_error($result)) {
+            return Response::error([], 422)->message($result->get_error_message());
+        }
+
+        return Response::success($result);
+    }
+
+    /**
+     * Persist a new order for one taxonomy's terms.
+     *
+     * Term CRUD goes through the core terms endpoint; only ordering needs a
+     * plugin route, because core can neither sort by meta nor write a whole
+     * list of terms in one request.
+     */
+    public function reorder(ReorderTermsRequest $request)
+    {
+        $taxonomy = $request->orderableTaxonomy();
+
+        if ($taxonomy === '') {
+            return Response::error('This taxonomy cannot be reordered.', 400);
+        }
+
+        $terms = TermOrderService::reorder($taxonomy, $request->orderedIds());
+
+        $data = [];
+
+        foreach ($terms as $position => $term) {
+            $data[] = [
+                'id'    => (int) $term->term_id,
+                'name'  => wp_specialchars_decode($term->name, ENT_QUOTES),
+                'slug'  => $term->slug,
+                'order' => $position,
+            ];
+        }
+
+        return Response::success($data);
+    }
+}

@@ -1,0 +1,110 @@
+<?php
+
+namespace BitApps\BitConnect\Http\Requests;
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+use BitApps\BitConnect\Deps\BitApps\WPKit\Http\Request\Request;
+use BitApps\BitConnect\Http\Rules\AssignableTermRule;
+use BitApps\BitConnect\Http\Rules\InRule;
+use BitApps\BitConnect\Http\Rules\LengthAtMostRule;
+use BitApps\BitConnect\Http\Rules\TagRefRule;
+use BitApps\BitConnect\Services\PermissionService;
+use BitApps\BitConnect\Services\PostingLimits;
+use BitApps\BitConnect\Services\TagResolverService;
+use BitApps\BitConnect\Services\TopicTaxonomies;
+
+/**
+ * Provides validation for updating a topic.
+ *
+ * @property int $id
+ * @property null|string $post_title
+ * @property null|string $post_content
+ * @property null|string $post_name
+ * @property null|string $post_status
+ * @property null|array $attachments
+ * @property null|array $topic-types
+ * @property null|array $stages
+ * @property null|array $statuses
+ * @property null|array $tags
+ * @property null|array $seo
+ */
+final class UpdateTopicRequest extends Request
+{
+    /**
+     * Coarse gate: may this user change anything about this topic at all.
+     *
+     * Moderators are admitted because this same endpoint carries status and
+     * stage changes, which are theirs to make. It does not follow that they may
+     * touch the words — TopicController::update() gates the content fields on
+     * authorship alone, and drops a title or body sent by anyone else.
+     */
+    public function authorize()
+    {
+        return PermissionService::canEditPost((int) $this->id)
+            || PermissionService::canModerate();
+    }
+
+    public function failedAuthorizationMessage(): string
+    {
+        if (!is_user_logged_in()) {
+            return 'You must be logged in to edit this post.';
+        }
+
+        return 'You do not have permission to edit this post.';
+    }
+
+    public function rules()
+    {
+        $rules = [
+            'id'           => ['required', 'integer', 'min:1'],
+            'post_title'   => ['nullable', 'string', 'sanitize:text', 'max:200'],
+            'post_content' => ['nullable', 'string', 'max:' . PostingLimits::TOPIC_HTML_CEILING],
+            // See CreateTopicRequest — omitted, the topic keeps the slug it has.
+            'post_name' => ['nullable', 'string', 'sanitize:title', new LengthAtMostRule(200)],
+            // Publish is the only status this endpoint sets. Sending it for a
+            // topic that is currently private makes it public, the same way
+            // clearing a capability override is always available. Omitting the
+            // field leaves the stored status alone, so an author editing a
+            // private topic keeps it private.
+            'post_status' => ['nullable', 'string', new InRule(['publish'])],
+            'attachments' => ['nullable', 'array'],
+            'topic-types' => ['nullable', 'integer', 'min:1'],
+            'stages'      => ['nullable', 'min:1'],
+            'statuses'    => ['nullable', 'integer', 'min:1'],
+            'tags'        => ['nullable', 'array', 'max:' . PostingLimits::TOPIC_TAGS_CEILING],
+            'tags.*'      => ['nullable', new TagRefRule()],
+            'is_locked'   => ['nullable', 'boolean'],
+        ];
+
+        // A taxonomy another plugin files topics under — see TopicTaxonomies.
+        foreach (array_keys(TopicTaxonomies::all()) as $param) {
+            $rules[$param] = ['nullable', 'integer', 'min:1', new AssignableTermRule($param)];
+        }
+
+        return $rules;
+    }
+
+    public function messages()
+    {
+        return [
+            'id.required'           => 'The post ID is required.',
+            'id.integer'            => 'The post ID must be a valid integer.',
+            'id.min'                => 'The post ID must be at least 1.',
+            'post_title.max'        => 'The post title cannot exceed 200 characters.',
+            'post_name.string'      => 'The post slug must be a string.',
+            'post_name.max'         => 'The post slug cannot exceed 200 characters.',
+            'post_content.max'      => 'The post description is too long.',
+            'topic-types.*.integer' => 'Each topic must be a valid ID.',
+            'topic-types.*.min'     => 'Each topic ID must be at least 1.',
+            'stages.*.integer'      => 'Each stage must be a valid ID.',
+            'stages.*.min'          => 'Each stage ID must be at least 1.',
+            'statuses.*.integer'    => 'Each status must be a valid ID.',
+            'statuses.*.min'        => 'Each status ID must be at least 1.',
+            'tags.max'              => \sprintf('A post may carry at most %d tags.', PostingLimits::TOPIC_TAGS_CEILING),
+            'tags.*.integer'        => \sprintf('Each tag must be a tag from the list or a name of up to %d characters.', TagResolverService::MAX_NAME_LENGTH),
+        ];
+    }
+}

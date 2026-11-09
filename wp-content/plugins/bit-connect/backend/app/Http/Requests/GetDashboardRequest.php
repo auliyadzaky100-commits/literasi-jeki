@@ -1,0 +1,47 @@
+<?php
+
+namespace BitApps\BitConnect\Http\Requests;
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+use BitApps\BitConnect\Deps\BitApps\WPKit\Http\Request\Request;
+use BitApps\BitConnect\Deps\BitApps\WPKit\Utils\Capabilities as WpCapabilities;
+use BitApps\BitConnect\Enum\Capabilities;
+use BitApps\BitConnect\Http\Rules\InRule;
+
+/**
+ * Provides validation for reading the admin dashboard.
+ *
+ * @property null|string $period
+ * @property null|string $fresh
+ */
+final class GetDashboardRequest extends Request
+{
+    public function authorize()
+    {
+        return WpCapabilities::check(Capabilities::MANAGE->value);
+    }
+
+    public function failedAuthorizationMessage(): string
+    {
+        if (!is_user_logged_in()) {
+            return 'You must be logged in to access the dashboard.';
+        }
+
+        return 'You do not have permission to access the dashboard.';
+    }
+
+    public function rules()
+    {
+        return [
+            // The window every "+N" on the dashboard counts over, and the span
+            // the activity chart draws. Omitted, the dashboard reads 30 days.
+            'period' => ['nullable', 'string', new InRule(['7d', '30d', '12m'])],
+            // The Refresh button: compute now instead of reading the cached
+            // answer, which can be a few minutes behind — see DashboardCache.
+            'fresh' => ['nullable', 'boolean'],
+        ];
+    }
+}

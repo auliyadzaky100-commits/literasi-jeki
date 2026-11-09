@@ -1,0 +1,1 @@
+import{b as e}from"./main-big-webs-switch.js";import{A as r}from"./index-yZ5IdMyB.js";function n(){return e("div",{children:e(r,{message:"No internet! Please check your network connection.",showIcon:!0,type:"error"})})}export{n as default};

@@ -1,0 +1,1 @@
+import{co as u,c3 as i,r as b}from"./main-chatty-signs-show.js";function l(t,s){const{tab:n}=u(),o=i(),c=s[0],e=s.find(a=>a===n)??c,r=b.useCallback(a=>{o(a===c?t:`${t}/${a}`)},[t,c,o]);return{activeTab:e,setActiveTab:r}}export{l as u};

@@ -1,0 +1,277 @@
+<?php
+
+namespace BitApps\BitConnect\Enum;
+
+// Prevent direct script access
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+use BitApps\BitConnect\Enum\Attributes\Description;
+use BitApps\BitConnect\Enum\Attributes\Label;
+use BitApps\BitConnect\Enum\Concerns\EnumHelper;
+
+/**
+ * Everything the forum can tell a member about.
+ *
+ * One vocabulary, deliberately short. Every notifiable event is a case here and
+ * nothing dispatches a type that is not — which is what lets the preference
+ * screen, the digest email and the admin defaults all be written once against
+ * cases() instead of being kept in step with a list of call sites by hand.
+ *
+ * A backed enum: every WordPress, database and API call takes ->value. Passing
+ * the case itself is a fatal, not a type error.
+ *
+ * Labels are written from the recipient's point of view, because that is where
+ * they are read — a preference row saying "Someone replied to your comment" is
+ * answerable, "Comment reply" is a database column. __() cannot run inside
+ * attribute arguments, so the translated wording lives in translatedLabel() and
+ * translatedDescription() below — read those for display, label() for the raw
+ * English.
+ */
+enum NotificationTypes: string
+{
+    use EnumHelper;
+
+    #[Label('Someone comments on your post')]
+    #[Description('A new top-level comment on a post you wrote or follow.')]
+    case TOPIC_REPLY = 'topic_reply';
+
+    #[Label('Someone comments on your comment')]
+    #[Description('A comment directly on a comment that you wrote.')]
+    case COMMENT_REPLY = 'comment_reply';
+
+    #[Label('A new post is published')]
+    #[Description('A post appears under something you follow.')]
+    case TOPIC_NEW = 'topic_new';
+
+    #[Label('Someone mentions you')]
+    #[Description('Your name is used in a post or comment.')]
+    case MENTION = 'mention';
+
+    #[Label('Someone upvotes your post')]
+    #[Description('Collapsed into one entry per item, so a popular post is one line and not fifty.')]
+    case VOTE_RECEIVED = 'vote_received';
+
+    #[Label('Your report is reviewed')]
+    #[Description('A moderator reaches a decision on something you reported.')]
+    case REPORT_RESOLVED = 'report_resolved';
+
+    #[Label('Your content is moderated')]
+    #[Description('Something you wrote was hidden or removed after review.')]
+    case CONTENT_ACTIONED = 'content_actioned';
+
+    #[Label('You are given a badge')]
+    #[Description('An admin awards you a profile badge.')]
+    case BADGE_AWARDED = 'badge_awarded';
+
+    #[Label('A post you follow changes status')]
+    #[Description('The stage or status moves on a post you wrote or follow.')]
+    case TOPIC_STATUS_CHANGED = 'topic_status_changed';
+
+    #[Label('A new report needs review')]
+    #[Description('Sent to moderators only, when a report enters the queue.')]
+    case REPORT_FILED = 'report_filed';
+
+    #[Label('Any new post is published')]
+    #[Description('Sent to moderators only, for every post published anywhere in the forum.')]
+    case TOPIC_POSTED = 'topic_posted';
+
+    #[Label('A new tag needs approval')]
+    #[Description('Sent only to people who can manage forum settings, when a member suggests a tag that is not in the list.')]
+    case TAG_SUGGESTED = 'tag_suggested';
+
+    #[Label('A member asks to join')]
+    #[Description('Sent to moderators only, when a member asks to join a private space.')]
+    case ACCESS_REQUESTED = 'access_requested';
+
+    #[Label('You are added to a group')]
+    #[Description('An admin lets you into a private space, or adds you to one.')]
+    case ACCESS_GRANTED = 'access_granted';
+
+    /**
+     * The label, translated.
+     *
+     * A match over literals rather than __($type->label()): `wp i18n make-pot`
+     * reads source, not runtime, so a __() whose argument is an expression puts
+     * nothing in the catalog — and a lookup the catalog does not hold returns
+     * the English string in every locale. Wrapping at the read site translated
+     * none of these; this does.
+     *
+     * The #[Label] attributes above remain the English wording every non-display
+     * reader gets. EnumLabelTranslationTest asserts the two agree case
+     * by case, so a reworded attribute cannot silently leave this behind.
+     *
+     * Static and typed by parameter rather than `self`: the coding standard's
+     * sniff does not treat an enum as class scope.
+     */
+    public static function translatedLabel(NotificationTypes $type): string
+    {
+        return match ($type) {
+            self::TOPIC_REPLY          => __('Someone comments on your post', 'bit-connect'),
+            self::COMMENT_REPLY        => __('Someone comments on your comment', 'bit-connect'),
+            self::TOPIC_NEW            => __('A new post is published', 'bit-connect'),
+            self::MENTION              => __('Someone mentions you', 'bit-connect'),
+            self::VOTE_RECEIVED        => __('Someone upvotes your post', 'bit-connect'),
+            self::REPORT_RESOLVED      => __('Your report is reviewed', 'bit-connect'),
+            self::CONTENT_ACTIONED     => __('Your content is moderated', 'bit-connect'),
+            self::BADGE_AWARDED        => __('You are given a badge', 'bit-connect'),
+            self::TOPIC_STATUS_CHANGED => __('A post you follow changes status', 'bit-connect'),
+            self::REPORT_FILED         => __('A new report needs review', 'bit-connect'),
+            self::TOPIC_POSTED         => __('Any new post is published', 'bit-connect'),
+            self::TAG_SUGGESTED        => __('A new tag needs approval', 'bit-connect'),
+            self::ACCESS_REQUESTED     => __('A member asks to join', 'bit-connect'),
+            self::ACCESS_GRANTED       => __('You are added to a group', 'bit-connect'),
+        };
+    }
+
+    /**
+     * The description, translated. See translatedLabel() for why it is a match.
+     */
+    public static function translatedDescription(NotificationTypes $type): string
+    {
+        return match ($type) {
+            self::TOPIC_REPLY          => __('A new top-level comment on a post you wrote or follow.', 'bit-connect'),
+            self::COMMENT_REPLY        => __('A comment directly on a comment that you wrote.', 'bit-connect'),
+            self::TOPIC_NEW            => __('A post appears under something you follow.', 'bit-connect'),
+            self::MENTION              => __('Your name is used in a post or comment.', 'bit-connect'),
+            self::VOTE_RECEIVED        => __('Collapsed into one entry per item, so a popular post is one line and not fifty.', 'bit-connect'),
+            self::REPORT_RESOLVED      => __('A moderator reaches a decision on something you reported.', 'bit-connect'),
+            self::CONTENT_ACTIONED     => __('Something you wrote was hidden or removed after review.', 'bit-connect'),
+            self::BADGE_AWARDED        => __('An admin awards you a profile badge.', 'bit-connect'),
+            self::TOPIC_STATUS_CHANGED => __('The stage or status moves on a post you wrote or follow.', 'bit-connect'),
+            self::REPORT_FILED         => __('Sent to moderators only, when a report enters the queue.', 'bit-connect'),
+            self::TOPIC_POSTED         => __('Sent to moderators only, for every post published anywhere in the forum.', 'bit-connect'),
+            self::TAG_SUGGESTED        => __('Sent only to people who can manage forum settings, when a member suggests a tag that is not in the list.', 'bit-connect'),
+            self::ACCESS_REQUESTED     => __('Sent to moderators only, when a member asks to join a private space.', 'bit-connect'),
+            self::ACCESS_GRANTED       => __('An admin lets you into a private space, or adds you to one.', 'bit-connect'),
+        };
+    }
+
+    /**
+     * Types only moderators ever receive.
+     *
+     * Kept out of an ordinary member's preference screen entirely: a row that
+     * can never fire is a promise the forum will not keep.
+     *
+     * Static rather than an instance method, and typed by parameter rather than
+     * `self`: the coding standard's sniff does not treat an enum as class scope
+     * and rejects both `$this` and a `self` hint inside one.
+     */
+    public static function isModeratorOnly(NotificationTypes $type): bool
+    {
+        return $type === self::REPORT_FILED
+            || $type === self::TOPIC_POSTED
+            || $type === self::TAG_SUGGESTED
+            || $type === self::ACCESS_REQUESTED;
+    }
+
+    /**
+     * Types this plugin raises by itself.
+     *
+     * All but three. Nothing here awards a profile badge — the catalogue, the
+     * assignment screen and the endpoint behind them are not part of this
+     * plugin — so BADGE_AWARDED is a case this forum can render and deliver but
+     * never originates. It stays in the enum because it must: a badge awarded
+     * by another plugin arrives as this type, and dropping the case would leave
+     * the mailer and the notification list unable to read a row they are handed.
+     * The same holds for ACCESS_REQUESTED and ACCESS_GRANTED: this plugin has
+     * no private spaces to ask to join, so it delivers those and raises neither.
+     *
+     * What it should not do is appear as a preference row on a forum where
+     * nothing can raise it, for exactly the reason isModeratorOnly() exists —
+     * a row that can never fire is a promise the forum will not keep. The
+     * screens ask ExtensionPoints::notifiableTypes() rather than cases(), and
+     * a plugin that does award badges puts the row back by answering the
+     * filter. Delivery is not gated on any of this: whoever raises the event,
+     * the member gets it.
+     */
+    public static function isDispatchedHere(NotificationTypes $type): bool
+    {
+        return !\in_array($type, [self::BADGE_AWARDED, self::ACCESS_REQUESTED, self::ACCESS_GRANTED], true);
+    }
+
+    /**
+     * Types a member cannot switch off in the app.
+     *
+     * Only one: being told your content was taken down. Removal is meant to be
+     * visible — that is the whole reason this forum grants delete-any and no
+     * edit-any (see Capabilities::DELETE_ANY). A member able to silence the
+     * notice would be able to make a removal silent after all, which puts back
+     * exactly the thing the capability split was drawn to prevent.
+     *
+     * Email for it remains optional. This governs the in-app record, not the
+     * inbox.
+     */
+    public static function isMandatoryInApp(NotificationTypes $type): bool
+    {
+        return $type === self::CONTENT_ACTIONED;
+    }
+
+    /**
+     * Types where repeats collapse onto one row instead of stacking.
+     *
+     * Votes, and requests to join a private space. A vote carries nothing of
+     * its own to read, so fifty of them are one fact — "fifty people liked
+     * this" — and fifty rows would bury every other notification the member
+     * has. A request is the same: what a moderator needs is "twelve people are
+     * waiting", and the space's queue lists who. A reply is the opposite: each
+     * one is a distinct thing somebody wrote and needs its own link.
+     */
+    public static function isCollapsible(NotificationTypes $type): bool
+    {
+        return $type === self::VOTE_RECEIVED || $type === self::ACCESS_REQUESTED;
+    }
+
+    /**
+     * Whether this type is on by default, per channel, before an admin or a
+     * member has touched anything.
+     *
+     * The shape of the answer is the shape of the settings blob and of the
+     * preference form, so all three stay in step by construction.
+     *
+     * In-app defaults to on for everything: it costs the member nothing and is
+     * the reason they have a bell. Email is far narrower — it leaves the site
+     * and lands somewhere the forum does not control, so only the types that
+     * are genuinely addressed to one person start switched on. Nobody wants
+     * mail every time a stranger upvotes them.
+     *
+     * @return array{inapp: bool, email: bool}
+     */
+    public static function channelDefaults(NotificationTypes $type): array
+    {
+        $emailByDefault = \in_array(
+            $type,
+            [
+                self::COMMENT_REPLY,
+                self::TOPIC_REPLY,
+                self::MENTION,
+                self::REPORT_RESOLVED,
+                self::CONTENT_ACTIONED,
+                // The answer to a request the member made and is waiting on.
+                self::ACCESS_GRANTED,
+            ],
+            true
+        );
+
+        return [
+            'inapp' => true,
+            'email' => $emailByDefault,
+        ];
+    }
+
+    /**
+     * The types an ordinary member may be shown and may configure.
+     *
+     * @return array<int, self>
+     */
+    public static function memberTypes(): array
+    {
+        return array_values(
+            array_filter(
+                self::cases(),
+                static fn (self $case): bool => !self::isModeratorOnly($case)
+            )
+        );
+    }
+}

@@ -1,0 +1,13 @@
+# Melindungi kredensial
+wp-config.php
+.env
+
+# File sementara
+wp-content/cache/
+wp-content/upgrade/
+wp-content/debug.log
+*.log
+
+# File sistem operasi
+.DS_Store
+Thumbs.db

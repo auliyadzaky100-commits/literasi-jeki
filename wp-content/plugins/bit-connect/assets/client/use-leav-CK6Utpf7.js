@@ -1,0 +1,1 @@
+import{t as s,r as n,z as r,h as o,i}from"./main-big-webs-switch.js";function f(e,a){const t=s();n.useEffect(()=>{e&&(r.IS_LOGGED_IN?t(a,{replace:!0}):window.location.replace(o(i(a))))},[e,t,a])}export{f as u};

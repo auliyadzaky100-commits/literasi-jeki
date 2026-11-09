@@ -1,0 +1,465 @@
+/*
+Theme Name: 	   Corbit
+Text Domain: 	   corbit
+Template: 			ploto
+Version:            0.9
+Tested up to:       7.1
+Requires at least:  4.7
+Requires PHP:       5.6
+Author:             DesertThemes
+Author URI:         https://desertthemes.com/
+Theme URI:          https://desertthemes.com/themes/corbit-free/
+Description:        Corbit is lightweight, highly extendable and multi-purpose WordPress Theme. Corbit is perfect for Startup, IT Solutions, IT Business, Agencies, Marketing, Consulting and Services Company related to any business websites. Corbit based on in-depth research into IT Solutions, IT Services, IT Business, Consulting & Software, Digital Solution, Technical Engineering, Technology, and Services Company, to deliver all needed layouts and blocks. It will enable you to create almost any type of website with a beautiful & professional design. Corbit supports popular WordPress plugins such as Elementor, WPML, Polylang, Yoast SEO, WooCommerce, Contact Form 7, Jetpack, and much more. Corbit Pro demo https://preview.desertthemes.com/pro/corbit/
+Tags:               one-column, two-columns ,right-sidebar, flexible-header, custom-background, custom-header, custom-menu, editor-style, featured-images, footer-widgets, post-formats, theme-options, threaded-comments, translation-ready, full-width-template, custom-logo, blog, e-commerce, portfolio
+License: GPLv3 or later
+License URI:  https://www.gnu.org/licenses/gpl-3.0.html
+
+This theme, like WordPress, is licensed under the GPL.
+Use it to make something cool, have fun, and share what you've learned
+with others.
+*/
+
+.screen-reader-text {
+    font-size: 14px !important;
+    right: unset !important;
+}
+
+:root {
+    --dt-main-rgb: 221, 0, 26;
+    --dt-secondary-color: #1f242e;
+}
+
+/* Header Four */
+
+.header--four {
+    font-size: 1.8rem;
+    color: var(--dt-secondary-color);
+}
+
+.header--four .dt_header-topbar {
+    color: #fff;
+    background-color: var(--dt-main-color);
+}
+
+.header--four .dt_header-topbar .dt_header-widget .contact__list i {
+    color: #fff;
+}
+
+.header--four .dt_header-topbar .widget.widget_social li a:after {
+    background-color: var(--dt-secondary-color);
+}
+
+@media (min-width: 75em) {
+    .header--four .dt_navbar-nav .dt_navbar-mainmenu>li>a {
+        margin: 0 1.5rem;
+    }
+    .header--four .dt_navbar-nav .dt_navbar-mainmenu>li:first-child>a {
+        margin-left: 0;
+    }
+}
+
+@media (min-width: 62em) {
+    .header--four .dt_header-inner {
+        position: absolute;
+        top: 2.4rem;
+        left: 0;
+        right: 0;
+        max-width: 140rem;
+        background-color: transparent;
+        margin: 0 auto;
+        padding: 0 1.5rem;
+    }
+    .header--four .dt_header-navwrapper .dt_navbar-list-right>li:not(:last-child) {
+        margin-right: 0;
+    }
+    .header--four .dt_header-navwrapper .dt_navbar-list-left>li:last-child,
+    .header--four .dt_header-navwrapper .dt_navbar-list-right>li:last-child,
+    .header--four .dt_header-navwrapper .dt_navbar-list-right>li:not(:first-child) {
+        position: relative;
+        margin-left: 1.75rem;
+        padding-left: 1.75rem;
+    }
+    .header--four .dt_header-navwrapper .dt_navbar-list-left>li:last-child::before,
+    .header--four .dt_header-navwrapper .dt_navbar-list-right>li:last-child::before,
+    .header--four .dt_header-navwrapper .dt_navbar-list-left>li:not(:first-child)::before,
+    .header--four .dt_header-navwrapper .dt_navbar-list-right>li:not(:first-child)::before {
+        position: absolute;
+        content: '';
+        background-color: rgba(189, 189, 189, 0.5);
+        width: 2rem;
+        height: 1px;
+        top: 50%;
+        left: -10px;
+        transform: translateY(-50%);
+    }
+    .header--four .dt_header-navwrapper .dt_navbar-list-left>li:last-child,
+    .header--four .dt_header-navwrapper .dt_navbar-list-right>li:last-child {
+        margin-left: 2.25rem;
+        padding-left: 2.25rem;
+    }
+    .header--four .dt_header-navwrapper .dt_navbar-list-left>li:last-child::before,
+    .header--four .dt_header-navwrapper .dt_navbar-list-right>li:last-child::before {
+        width: 1px;
+        height: 5.4rem;
+        left: 0;
+    }
+    .header--four .dt_header-topbar {
+        max-width: 93%;
+        margin: 0 auto;
+        border-radius: 40px 40px 0 0;
+    }
+    .header--four .dt_header-topbar .dt_header-widget {
+        padding: 0 1rem 0 2rem;
+    }
+    .header--four .dt_header-navwrapper {
+        background-color: #fff;
+        border-radius: 200px;
+    }
+    .header--four .dt_header-topbar .dt-container::before {
+        content: "";
+        position: absolute;
+        top: -2.4rem;
+        left: -0.5rem;
+        width: 12.2rem;
+        height: 12.2rem;
+        background-color: var(--dt-main-color);
+        --header-four-mask: url("data:image/svg+xml,%3Csvg%20width%3D%22158%22%20height%3D%22160%22%20viewBox%3D%220%200%20158%20160%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cpath%20d%3D%22M78.7852%200L85.7311%2040.6077L106.147%204.82459L98.7852%2045.359L130.208%2018.7164L109.427%2054.2885L148.067%2040L116.373%2066.3192L157.57%2066.1081L118.785%2080L157.57%2093.8919L116.373%2093.6808L148.067%20120L109.427%20105.712L130.208%20141.284L98.7852%20114.641L106.147%20155.175L85.7311%20119.392L78.7852%20160L71.8392%20119.392L51.4235%20155.175L58.7852%20114.641L27.3621%20141.284L48.1434%20105.712L9.50312%20120L41.1975%2093.6808L0.000534058%2093.8919L38.7852%2080L0.000534058%2066.1081L41.1975%2066.3192L9.50312%2040L48.1434%2054.2885L27.3621%2018.7164L58.7852%2045.359L51.4235%204.82459L71.8392%2040.6077L78.7852%200Z%22%20fill%3D%22currentColor%22%2F%3E%3C%2Fsvg%3E");
+        -webkit-mask-image: var(--header-four-mask);
+        mask-image: var(--header-four-mask);
+        mask-size: 100%;
+        -webkit-mask-size: 100%;
+        z-index: -1;
+    }
+    .header--four .dt_header-topbar .dt_header-widget .widget:not(:last-child):after {
+        background-color: rgba(255, 255, 255, 0.5);
+    }
+    .header--four + #content .dt_slider .dt_owl_carousel,
+    .header--four + #content .dt_slider .dt_slider-item,
+    .header--four + #content .dt_slider .dt_slider-innercell,
+    .header--four + #content .dt_slider .dt_slider-item>img {
+        max-height: 80rem;
+        min-height: 80rem;
+    }
+    .header--four + #content .dt_slider .dt_slider-innercell {
+        padding-top: 16rem;
+    }
+    .header--four + .dt_pagetitle.dt-text-center {
+        padding-top: 230px;
+        padding-bottom: 65px;
+    }
+}
+
+.header--four + .dt_pagetitle .dt_pagetitle_bgimage {
+    top: 0;
+    left: 0;
+    right: 0;
+    border-radius: 0;
+}
+
+.header--four .dt-col-2.dt-my-auto {
+    -ms-flex: 0 0 18%;
+    flex: 0 0 18%;
+    max-width: max-content;
+}
+
+.header--four .dt-col-10.dt-my-auto {
+    -ms-flex: 1 1 0%;
+    flex: 1 1 0%;
+    max-width: unset;
+}
+
+.header--four .dt_navbar-menu {
+    padding-left: 2.2rem;
+    justify-content: space-between;
+}
+
+.header--four .dt_navbar-menu > .dt_navbar-left,
+.header--four .dt_navbar-menu > .dt_navbar-right {
+	flex-shrink: 0;
+}
+
+.header--four .dt_navbar-nav {
+    text-align: start;
+}
+
+/* Information Three section */
+
+.dt_slider + .dt_information--three {
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.dt_slider + .dt_information--three .dt-row {
+    position: relative;
+    margin-top: -7.8rem;
+    padding-bottom: 8rem;
+    --dt-gutter-y: 2rem;
+    --dt-gutter-x: 2rem;
+}
+
+.dt_information--three .dt-information-box {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    height: 343px;
+    max-width: 300px;
+    padding-top: 36px;
+    margin: 0 auto;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    background-color: #ffffff;
+    -webkit-mask-position: center center;
+    mask-position: center center;
+    --info-three-mask: url("data:image/svg+xml,%3Csvg%20width%3D%22300%22%20height%3D%22343%22%20viewBox%3D%220%200%20300%20343%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cpath%20d%3D%22M0%2092.0391C0%2087.0181%202.68461%2082.3809%207.03716%2079.8837L143.037%201.85575C147.35%20-0.618587%20152.65%20-0.618582%20156.963%201.85576L292.963%2079.8837C297.315%2082.3809%20300%2087.0181%20300%2092.0391V250.961C300%20255.982%20297.315%20260.619%20292.963%20263.116L156.963%20341.144C152.65%20343.619%20147.35%20343.619%20143.037%20341.144L7.03715%20263.116C2.68461%20260.619%200%20255.982%200%20250.961V92.0391Z%22%20fill%3D%22currentColor%22%2F%3E%3C%2Fsvg%3E");
+    -webkit-mask-image: var(--info-three-mask);
+    mask-image: var(--info-three-mask);
+    -webkit-mask-size: contain;
+    mask-size: contain;
+}
+
+.dt_information--three .dt-information-box .image-box {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: -1;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    visibility: hidden;
+    -webkit-transition: all 700ms ease;
+    transition: all 700ms ease;
+}
+
+.dt_information--three .dt-information-box:focus-within .image-box,
+.dt_information--three .dt-information-box:hover .image-box {
+    opacity: 1;
+    visibility: visible;
+}
+
+.dt_information--three .dt-information-box .image-box:before {
+    top: 0;
+    left: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    content: "";
+    position: absolute;
+    background-color: rgba(0, 0, 0, 0.7);
+}
+
+.dt_information--three .dt-information-box .image-box img {
+    width: 100%;
+    height: 100%;
+    -o-object-fit: cover;
+    object-fit: cover;
+    -webkit-transition: all 2500ms ease;
+    transition: all 2500ms ease;
+}
+
+.dt_information--three .dt-information-box:focus-within .image-box img,
+.dt_information--three .dt-information-box:hover .image-box img {
+    -webkit-transform: scale(1.5);
+    transform: scale(1.5);
+}
+
+.dt_information--three .dt-information-box .border {
+    position: absolute;
+    inset: 11px;
+    z-index: -1;
+    -webkit-transition: all 1500ms ease;
+    transition: all 1500ms ease;
+    -webkit-clip-path: polygon(0 100%, 100% 100%, 100% 100%, 0 100%);
+    clip-path: polygon(0 100%, 100% 100%, 100% 100%, 0 100%);
+}
+
+.dt_information--three .dt-information-box:focus-within .border,
+.dt_information--three .dt-information-box:hover .border {
+    -webkit-clip-path: polygon(0 100%, 100% 100%, 100% 0, 0 0);
+    clip-path: polygon(0 100%, 100% 100%, 100% 0, 0 0);
+}
+
+.dt_information--three .dt-information-box .border svg {
+    width: 100%;
+    height: 100%;
+    color: var(--dt-main-color);
+}
+
+.dt_information--three .dt-information-box .icon-box {
+    width: 86px;
+    height: 86px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-bottom: 1.6rem;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-transition: all 500ms ease;
+    transition: all 500ms ease;
+    -webkit-mask-position: center center;
+    mask-position: center center;
+    background-color: rgba(236, 57, 0, 0.13);
+    --info-three-mask: url("data:image/svg+xml,%3Csvg%20width%3D%2276%22%20height%3D%2286%22%20viewBox%3D%220%200%2076%2086%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cpath%20d%3D%22M0%2021.312L38%200L76%2021.312V43V64.688L38%2086L0%2064.688V43V21.312Z%22%20fill%3D%22currentColor%22%2F%3E%3C%2Fsvg%3E");
+    -webkit-mask-image: var(--info-three-mask);
+    mask-image: var(--info-three-mask);
+    -webkit-mask-size: contain;
+    mask-size: contain;
+}
+
+.dt_information--three .dt-information-box:focus-within .icon-box,
+.dt_information--three .dt-information-box:hover .icon-box {
+    background-color: var(--dt-main-color);
+}
+
+.dt_information--three .dt-information-box .icon-box i {
+    display: -webkit-box;
+    display: -ms-flexbox;
+    display: flex;
+    font-size: 4.2rem;
+    color: var(--dt-main-color);
+    -webkit-transition: all 500ms ease;
+    transition: all 500ms ease;
+}
+
+.dt_information--three .dt-information-box:focus-within .icon-box i,
+.dt_information--three .dt-information-box:hover .icon-box i {
+    color: #fff;
+}
+
+.dt_information--three .dt-information-box .content-box {
+    text-align: center;
+    padding: 0 15px;
+}
+
+.dt_information--three .dt-information-box .title {
+    font-size: 2.2rem;
+}
+
+.dt_information--three .dt-information-box .title a,
+.dt_information--three .dt-information-box .title {
+    -webkit-transition: all 500ms ease;
+    transition: all 500ms ease;
+}
+
+.dt_information--three .dt-information-box .text {
+    margin-top: 0.3rem;
+    -webkit-transition: all 500ms ease;
+    transition: all 500ms ease;
+}
+
+.dt_information--three .dt-information-box:focus-within .title a,
+.dt_information--three .dt-information-box:focus-within .title,
+.dt_information--three .dt-information-box:focus-within .text,
+.dt_information--three .dt-information-box:hover .title a,
+.dt_information--three .dt-information-box:hover .title,
+.dt_information--three .dt-information-box:hover .text {
+    color: #fff;
+}
+
+.dt_information--three .dt-information-box .dt-more {
+    margin: 1.4rem auto 0;
+}
+
+/* Service Two */
+
+.dt_service--two .service-box {
+    position: relative;
+}
+
+.dt_service--two .service-box .thumb {
+    border-radius: 2rem;
+}
+
+.dt_service--two .service-box .service-top {
+    left: 0;
+    right: 0;
+    width: 87%;
+    bottom: 2rem;
+    margin: 0 auto;
+    border-radius: 2rem;
+    padding: 2rem 2.5rem;
+    position: absolute;
+    -webkit-transition: all 500ms ease;
+    transition: all 500ms ease;
+    background-color: rgba(33, 33, 33, 0.5);
+    -webkit-backdrop-filter: blur(1rem);
+    backdrop-filter: blur(1rem);
+}
+
+.dt_service--two .service-box:focus-within .service-top,
+.dt_service--two .service-box:hover .service-top {
+    background-color: var(--dt-main-color);
+}
+
+.dt_service--two .service-box .service-top .icon {
+    position: absolute;
+    top: -3.5rem;
+    right: -1.5rem;
+    width: 7rem;
+    height: 7rem;
+    border-radius: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 3rem;
+    background-color: var(--dt-main-color);
+    color: #fff;
+    -webkit-transition: all 500ms ease;
+    transition: all 500ms ease;
+}
+
+.dt_service--two .service-box:focus-within .service-top .icon,
+.dt_service--two .service-box:hover .service-top .icon {
+    background-color: #fff;
+    color: var(--dt-main-color);
+}
+
+.dt_service--two .service-box .service-top .title {
+    font-size: 2.2rem;
+}
+
+.dt_service--two .service-box .service-top .text,
+.dt_service--two .service-box .service-top .title {
+    color: #fff;
+}
+
+.dt_service--two .service-box .service-top .title br {
+    display: none;
+}
+
+.dt_service--two .service-box .service-top .text {
+    font-size: 1.5rem;
+    margin-top: 0.4rem;
+}
+
+.dt_service--two .service-box .service-top .dt-btn {
+    margin-top: 1rem;
+    padding: 0.7rem 1.7rem 0.7rem 1.7rem;
+    font-size: 1.5rem;
+}
+
+.dt_service--two .service-box:focus-within .service-top .dt-btn,
+.dt_service--two .service-box:hover .service-top .dt-btn {
+    --dt-gray-color: #fff;
+}
+
+.dt_service--two .service-box .thumb img {
+    min-height: 47rem;
+    object-fit: cover;
+}
+
+.wp-block-list li a:not(:hover):not(:focus) {
+    text-decoration: none;
+}
+
+.wp-block-breadcrumbs li a {
+    text-decoration: none;
+}
+
+.wp-block-breadcrumbs li a:not(:hover):not(:focus) {
+    color: var(--dt-secondary-color);
+}
+
+.wp-block-accordion-heading__toggle {
+    padding: 1rem;
+}

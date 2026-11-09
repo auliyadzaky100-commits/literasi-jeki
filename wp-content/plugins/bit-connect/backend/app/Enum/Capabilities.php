@@ -1,0 +1,252 @@
+<?php
+
+namespace BitApps\BitConnect\Enum;
+
+// Prevent direct script access
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+use BitApps\BitConnect\Enum\Attributes\Label;
+use BitApps\BitConnect\Enum\Concerns\EnumHelper;
+
+/**
+ * Forum capabilities (backed enum).
+ *
+ * All permission checks go through WPKit's Capabilities::check() with the case
+ * value, e.g. Capabilities::check(self::MANAGE->value). Never hard-code role names —
+ * grant/revoke via CapabilityService settings.
+ *
+ * Labels live in #[Label] attributes (read via the EnumHelper trait). __()
+ * cannot run inside attribute args, so the translated wording lives in
+ * translatedLabel()/translatedLabels() below — read those for display, label()
+ * for the raw English.
+ */
+enum Capabilities: string
+{
+    use EnumHelper;
+
+    // Content authoring
+    #[Label('Create Posts')]
+    case CREATE_POST = 'bit_connect_forum_create_post';
+
+    #[Label('Edit Own Posts')]
+    case EDIT_OWN_POST = 'bit_connect_forum_edit_own_post';
+
+    #[Label('Delete Own Posts')]
+    case DELETE_OWN_POST = 'bit_connect_forum_delete_own_post';
+
+    #[Label('Create Comments')]
+    case CREATE_COMMENT = 'bit_connect_forum_create_comment';
+
+    #[Label('Edit Own Comments')]
+    case EDIT_OWN_COMMENT = 'bit_connect_forum_edit_own_comment';
+
+    #[Label('Delete Own Comments')]
+    case DELETE_OWN_COMMENT = 'bit_connect_forum_delete_own_comment';
+
+    /*
+     * Adding a tag that is not in the list. A suggestion rather than a
+     * creation: the tag goes on the topic at once, but stays out of the
+     * picker and the filter until an administrator approves it — see
+     * TagApprovalService. Not in memberCaps(): the vocabulary is curated by
+     * default, and a forum that wants members adding to it switches this on.
+     */
+    #[Label('Suggest New Tags')]
+    case CREATE_TAG = 'bit_connect_forum_create_tag';
+
+    // Voting
+    #[Label('Vote on Posts')]
+    case VOTE_POST = 'bit_connect_forum_vote_post';
+
+    /*
+     * There is no vote-on-comments capability here: this plugin does not
+     * implement upvotes on replies. A plugin that adds a capability of its own
+     * declares its slug through the `bit_connect_capabilities` filter so the
+     * roles screen lists it and saving that screen does not strip it.
+     */
+
+    // Content authority over other people's words
+    /*
+     * There is no edit-any capability, and adding one back is a product
+     * decision rather than an oversight. A topic or comment carries its
+     * author's name and avatar, so anyone able to rewrite it can change what
+     * the forum says that person said. Removal is visible — the content is
+     * plainly gone, and the author can see that for themselves. A silent
+     * rewrite is not.
+     *
+     * Moderation here means taking something down, not changing what it says:
+     * hide it, remove it, lock the thread, or resolve the report. If the words
+     * need to change, the author changes them.
+     */
+    #[Label('Delete Any Content')]
+    case DELETE_ANY = 'bit_connect_forum_delete_any';
+
+    // Moderation
+    /*
+     * Running the forum, not rewriting it. This used to carry edit-any and
+     * delete-any too, which meant a moderator could not be given the queue
+     * without also being handed the power to reword anybody's post. Removal is
+     * DELETE_ANY above; the power to reword no longer exists at all. What is
+     * left here is reviewing reports, replying in a locked thread, and reading
+     * another member's votes and permissions.
+     */
+    #[Label('Moderate (Reports, Locked Threads)')]
+    case MODERATE = 'bit_connect_forum_moderate';
+
+    #[Label('Lock/Unlock Posts')]
+    case LOCK_POST = 'bit_connect_forum_lock_post';
+
+    // Administration
+    #[Label('Manage Forum Settings')]
+    case MANAGE = 'bit_connect_forum_manage';
+
+    /**
+     * A capability this plugin used to grant and no longer recognises.
+     *
+     * Kept as a plain slug rather than a case because nothing may check for it
+     * any more — currentUserCapabilities() walks cases(), so a case here would
+     * put it back in the map the portal gates on. Its only remaining reader is
+     * CapabilityService::revokeEditAny(), which strips it from sites that were
+     * granted it before it was withdrawn.
+     */
+    public const WITHDRAWN_EDIT_ANY = 'forum_edit_any';
+
+    /**
+     * The label, translated.
+     *
+     * A match over literals rather than __($cap->label()): `wp i18n make-pot`
+     * reads source, not runtime, so a __() whose argument is an expression puts
+     * nothing in the catalog — and a lookup the catalog does not hold returns
+     * the English string in every locale. Wrapping at the read site translated
+     * none of these; this does.
+     *
+     * The #[Label] attributes above remain the English wording every non-display
+     * reader gets. EnumLabelTranslationTest asserts the two agree case
+     * by case, so a reworded attribute cannot silently leave this behind.
+     *
+     * Static and typed by parameter rather than `self`: the coding standard's
+     * sniff does not treat an enum as class scope.
+     */
+    public static function translatedLabel(Capabilities $capability): string
+    {
+        return match ($capability) {
+            self::CREATE_POST        => __('Create Posts', 'bit-connect'),
+            self::EDIT_OWN_POST      => __('Edit Own Posts', 'bit-connect'),
+            self::DELETE_OWN_POST    => __('Delete Own Posts', 'bit-connect'),
+            self::CREATE_COMMENT     => __('Create Comments', 'bit-connect'),
+            self::EDIT_OWN_COMMENT   => __('Edit Own Comments', 'bit-connect'),
+            self::DELETE_OWN_COMMENT => __('Delete Own Comments', 'bit-connect'),
+            self::CREATE_TAG         => __('Suggest New Tags', 'bit-connect'),
+            self::VOTE_POST          => __('Vote on Posts', 'bit-connect'),
+            self::DELETE_ANY         => __('Delete Any Content', 'bit-connect'),
+            self::MODERATE           => __('Moderate (Reports, Locked Threads)', 'bit-connect'),
+            self::LOCK_POST          => __('Lock/Unlock Posts', 'bit-connect'),
+            self::MANAGE             => __('Manage Forum Settings', 'bit-connect'),
+        };
+    }
+
+    /**
+     * Map of capability slug => translated label, for every case.
+     *
+     * The display counterpart to labels(), which stays English because its
+     * readers key on it rather than print it.
+     *
+     * @return array<string, string>
+     */
+    public static function translatedLabels(): array
+    {
+        $labels = [];
+
+        foreach (self::cases() as $case) {
+            $labels[$case->value] = self::translatedLabel($case);
+        }
+
+        return $labels;
+    }
+
+    /**
+     * Capabilities granted to basic forum members.
+     *
+     * @return array<int, self>
+     */
+    public static function memberCaps(): array
+    {
+        return [
+            self::CREATE_POST, self::EDIT_OWN_POST, self::DELETE_OWN_POST,
+            self::CREATE_COMMENT, self::EDIT_OWN_COMMENT, self::DELETE_OWN_COMMENT,
+            self::VOTE_POST,
+        ];
+    }
+
+    /**
+     * Capabilities granted to forum moderators (includes member caps).
+     *
+     * Carries DELETE_ANY but no edit-any counterpart: a moderator can take
+     * content down and cannot rewrite it. See the note on DELETE_ANY above.
+     *
+     * @return array<int, self>
+     */
+    public static function moderatorCaps(): array
+    {
+        return [
+            ...self::memberCaps(),
+            self::DELETE_ANY,
+            self::MODERATE, self::LOCK_POST,
+        ];
+    }
+
+    /**
+     * Capabilities that grant authority over content the user did not write.
+     *
+     * The set the upgrade hands to everyone who held MODERATE before it was
+     * split, so nobody loses a power they had yesterday. Removal is the only
+     * one left — forum_edit_any was withdrawn, and revokeEditAny() takes it
+     * back from sites that were granted it by the earlier upgrade.
+     *
+     * @return array<int, self>
+     */
+    public static function contentAuthorityCaps(): array
+    {
+        return [self::DELETE_ANY];
+    }
+
+    /**
+     * Full set of forum capabilities.
+     *
+     * @return array<int, self>
+     */
+    public static function adminCaps(): array
+    {
+        return self::cases();
+    }
+
+    /**
+     * Turn a list of cases into a slug => true map (as stored in settings).
+     *
+     * @param array<int, self> $cases
+     *
+     * @return array<string, bool>
+     */
+    public static function capMap(array $cases): array
+    {
+        return array_fill_keys(array_map(static fn (self $case): string => $case->value, $cases), true);
+    }
+
+    /**
+     * Legacy capability map: old bit_connect_* caps → new forum_* cap slugs.
+     * Used by CapabilityService::migrateFromLegacyCaps().
+     *
+     * @return array<string, string[]>
+     */
+    public static function legacyMap(): array
+    {
+        return [
+            'bit_connect_post'     => [self::CREATE_POST->value, self::EDIT_OWN_POST->value, self::DELETE_OWN_POST->value],
+            'bit_connect_comment'  => [self::CREATE_COMMENT->value, self::EDIT_OWN_COMMENT->value, self::DELETE_OWN_COMMENT->value],
+            'bit_connect_vote'     => [self::VOTE_POST->value],
+            'bit_connect_moderate' => [self::MODERATE->value, self::LOCK_POST->value],
+            'bit_connect_manage'   => [self::MANAGE->value],
+        ];
+    }
+}

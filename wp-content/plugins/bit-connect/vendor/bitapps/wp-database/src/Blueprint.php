@@ -1,0 +1,833 @@
+<?php
+
+namespace BitApps\BitConnect\Deps\BitApps\WPDatabase;
+
+if (!\defined('ABSPATH')) {
+    exit;
+}
+
+use Closure;
+
+use Exception;
+
+use RuntimeException;
+
+/**
+ * Class for schema blueprint.
+ *
+ * @method Blueprint char($name, $length = null)
+ * @method Blueprint varchar($name, $length = null)
+ * @method Blueprint binary($name, $length = null)
+ * @method Blueprint json($name, $length = null)
+ * @method Blueprint varbinary($name, $length = null)
+ * @method Blueprint tinyblob($name, $length = null)
+ * @method Blueprint tinytext($name, $length = null)
+ * @method Blueprint text($name, $length = null)
+ * @method Blueprint blob($name, $length = null)
+ * @method Blueprint mediumtext($name, $length = null)
+ * @method Blueprint mediumblob($name, $length = null)
+ * @method Blueprint longtext($name, $length = null)
+ * @method Blueprint longblob($name, $length = null)
+ * @method Blueprint enum($name, array $enum)
+ * @method Blueprint set($name, array $set)
+ * @method Blueprint bit($name, $length = null)
+ * @method Blueprint tinyint($name, $length = null)
+ * @method Blueprint bool($name)
+ * @method Blueprint boolean($name)
+ * @method Blueprint smallint($name, $length = null)
+ * @method Blueprint mediumint($name, $length = null)
+ * @method Blueprint int($name, $length = null)
+ * @method Blueprint integer($name, $length = null)
+ * @method Blueprint bigint($name, $length = null)
+ * @method Blueprint float($name, $length = null)
+ * @method Blueprint float($name, $length = null)
+ * @method Blueprint double($name, $length = null)
+ * @method Blueprint double_precision($name, $length = null)
+ * @method Blueprint decimal($name, $precision = null, $scale = null)
+ * @method Blueprint dec($name, $precision = null, $scale = null)
+ * @method Blueprint date($name)
+ * @method Blueprint datetime($name)
+ * @method Blueprint timestamp($name)
+ * @method Blueprint time($name)
+ * @method Blueprint year($name)
+ */
+class Blueprint
+{
+    public $charset;
+
+    public $collation;
+
+    public $after;
+
+    protected $table;
+
+    protected $primaryKey = [];
+
+    protected $uniqueIndex = [];
+
+    protected $indexColumns = [];
+
+    protected $foreignKeys = [];
+
+    /**
+     * Storage engine for created tables. InnoDB by default because MyISAM silently discards the
+     * FOREIGN KEY clauses this builder emits and supports no transactions; override with engine().
+     */
+    protected $engine = 'InnoDB';
+
+    protected $columns = [];
+
+    protected $columnIndex = 0;
+
+    protected $columnsToDrop = [];
+
+    protected $columnsToRename = [];
+
+    protected $method;
+
+    private $fkID = '';
+
+    private $_sql = '';
+
+    private $_rawSql = false;
+
+    private $_prefix = '';
+
+    private $_edit = [];
+
+    private $_newName = '';
+
+    /**
+     * Create a new schema blueprint.
+     *
+     * @param string       $table    Table name
+     * @param string       $method   Schema method
+     * @param string       $prefix   Table prefix
+     * @param null|Closure $callback Closure to build the blueprint
+     */
+    public function __construct($table, $method, $prefix = '', ?Closure $callback = null)
+    {
+        $this->_prefix   = $prefix;
+        $this->table     = "{$prefix}{$table}";
+        $this->method    = $method;
+        $this->collation = $this->getCollation();
+        if ($callback instanceof Closure) {
+            $callback($this);
+        }
+
+        Connection::suppressError();
+    }
+
+    public function __call($method, $parameters)
+    {
+        $formattedMethodName = strtoupper(str_replace('_', ' ', $method));
+        if ($this->isValidType($formattedMethodName)) {
+            // Only decimal/dec take a scale (name, precision, scale); others are name + length.
+            $maxParams = \in_array($method, ['decimal', 'dec'], true) ? 3 : 2;
+            if (\count($parameters) > $maxParams) {
+                throw new Exception('Too many parameters');
+            }
+
+            $columnName = $parameters[0];
+            array_shift($parameters);
+
+            return $this->addColumn($columnName, $formattedMethodName, ...$parameters);
+        }
+
+        throw new RuntimeException("Undefined method [  {$method}  ] called on Blueprint");
+    }
+
+    public function withPrefix($prefix)
+    {
+        $this->table = "{$prefix}{$this->table}";
+
+        return $this;
+    }
+
+    public function build()
+    {
+        return $this->toSql();
+    }
+
+    public function toSql()
+    {
+        switch ($this->method) {
+            case 'create':
+                $this->create(true);
+
+                break;
+
+            case 'drop':
+                $this->drop();
+
+                break;
+
+            default:
+                $this->_rawSql = true;
+
+                break;
+        }
+
+        return $this->execute();
+    }
+
+    public function execute()
+    {
+        if (\is_null($this->_sql)) {
+            return false;
+        }
+
+        Connection::query($this->_sql);
+        $hasError = Connection::prop('last_error');
+        Connection::restoreErrorState();
+        if ($hasError) {
+            throw new RuntimeException($hasError);
+        }
+
+        return true;
+    }
+
+    public function create($isSql = false)
+    {
+        if ($isSql) {
+            if (empty($this->columns)) {
+                return false;
+            }
+
+            $queryToAdd[] = $this->addColumnQuery();
+            $queryToAdd[] = $this->addPrimaryKeyQuery();
+            $queryToAdd[] = $this->addUniqueIndexQuery();
+            $queryToAdd[] = $this->addIndexQuery();
+            $queryToAdd[] = $this->addForeignKeyQuery();
+
+            $this->_sql = "CREATE TABLE IF NOT EXISTS {$this->table} (
+             {$this->processQueryArr($queryToAdd)}
+             ) ENGINE={$this->engine} {$this->collation}";
+        }
+
+        return $this;
+    }
+
+    public function edit()
+    {
+        $queryToAdd[] = $this->addColumnQuery();
+        $queryToAdd[] = $this->dropColumnQuery();
+        $queryToAdd[] = $this->renameColumnQuery();
+        $queryToAdd   = $queryToAdd + $this->_edit;
+        $queryToAdd[] = $this->addPrimaryKeyQuery();
+        $queryToAdd[] = $this->addUniqueIndexQuery();
+        $queryToAdd[] = $this->addIndexQuery();
+        $queryToAdd[] = $this->addForeignKeyQuery();
+
+        $query      = $this->processQueryArr($queryToAdd);
+        $this->_sql = "ALTER TABLE {$this->table}";
+        $this->_sql .= " {$query}";
+
+        return $this;
+    }
+
+    public function drop()
+    {
+        if ($this->method === 'drop') {
+            $this->_sql = "DROP TABLE IF EXISTS {$this->table}";
+        }
+
+        return $this;
+    }
+
+    public function rename($newName)
+    {
+        if ($this->method === 'rename') {
+            $this->_sql = "ALTER TABLE {$this->table} RENAME TO {$this->_prefix}{$newName}";
+        } else {
+            $this->_newName = $newName;
+        }
+
+        return $this;
+    }
+
+    public function addColumn($name, $type, $length = null, $scale = null)
+    {
+        if ($this->method === 'addColumn') {
+            $this->_sql = "ALTER TABLE {$this->table} ADD {$name} {$type}";
+            if (!\is_null($scale)) {
+                $this->_sql .= "({$length}, {$scale})";
+            } elseif ($length) {
+                $this->_sql .= "({$length})";
+            }
+        } else {
+            $this->columnIndex = \count($this->columns);
+            $this->columns[]   = [
+                'name' => $name,
+                'type' => $type,
+            ];
+            if (!\is_null($scale)) {
+                $this->columns[$this->columnIndex]['precision'] = $length;
+                $this->columns[$this->columnIndex]['scale']     = $scale;
+            } elseif (!\is_null($length)) {
+                $this->length($length);
+            }
+        }
+
+        return $this;
+    }
+
+    public function dropColumn($column)
+    {
+        if ($this->method === 'dropColumn') {
+            $this->_sql = "ALTER TABLE {$this->table} DROP {$column}";
+        } else {
+            $this->columnsToDrop[] = $column;
+        }
+
+        return $this;
+    }
+
+    public function renameColumn($column, $newName)
+    {
+        if ($this->method === 'renameColumn') {
+            $this->_sql = "ALTER TABLE {$this->table} RENAME COLUMN {$column} TO {$newName}";
+        } else {
+            $this->columnsToRename[] = [
+                'column'   => $column,
+                'new_name' => $newName,
+            ];
+        }
+
+        return $this;
+    }
+
+    public function renameColumnQuery()
+    {
+        $query = '';
+        if (\is_array($this->columnsToRename)) {
+            foreach ($this->columnsToRename as $id => $column) {
+                if ($id > 0) {
+                    $query .= "\n, ";
+                }
+
+                $query .= "RENAME COLUMN {$column['column']} TO {$column['new_name']}";
+            }
+        }
+
+        return $query;
+    }
+
+    public function change()
+    {
+        $this->columns[$this->columnIndex]['change'] = true;
+
+        return $this;
+    }
+
+    public function increments($column = null)
+    {
+        if (!\is_null($column)) {
+            $this->columnIndex = \count($this->columns);
+            $this->columns[]   = [
+                'type' => 'BIGINT',
+                'name' => "{$column}",
+            ];
+        }
+
+        $this->columns[$this->columnIndex]['props'][] = 'AUTO_INCREMENT';
+
+        return $this;
+    }
+
+    public function id()
+    {
+        $this->columnIndex = \count($this->columns);
+        $this->columns[]   = [
+            'type'     => 'BIGINT',
+            'name'     => 'id',
+            'unsigned' => 'UNSIGNED',
+        ];
+        $this->increments();
+        $this->primary();
+
+        return $this;
+    }
+
+    public function string($name)
+    {
+        $this->columnIndex = \count($this->columns);
+        $this->columns[]   = [
+            'type' => 'VARCHAR',
+            'name' => $name,
+        ];
+        $this->length('255');
+
+        return $this;
+    }
+
+    public function timestamps()
+    {
+        $this->columnIndex = \count($this->columns);
+        $this->columns[]   = [
+            'type' => 'timestamp',
+            'name' => 'created_at',
+        ];
+        $this->nullable()->defaultValue('NULL');
+        ++$this->columnIndex;
+        $this->columns[] = [
+            'type' => 'timestamp',
+            'name' => 'updated_at',
+        ];
+        $this->nullable()->defaultValue('NULL');
+
+        return $this;
+    }
+
+    public function softDeletes()
+    {
+        $this->columnIndex = \count($this->columns);
+        $this->columns[]   = [
+            'type' => 'timestamp',
+            'name' => 'deleted_at',
+        ];
+        $this->nullable()->defaultValue('NULL');
+
+        return $this;
+    }
+
+    public function nullable()
+    {
+        $this->columns[$this->columnIndex]['nullable'] = true;
+
+        return $this;
+    }
+
+    public function defaultValue($value)
+    {
+        $this->columns[$this->columnIndex]['default'] = $value;
+
+        return $this;
+    }
+
+    public function unsigned()
+    {
+        $this->columns[$this->columnIndex]['unsigned'] = 'UNSIGNED';
+
+        return $this;
+    }
+
+    public function zeroFill()
+    {
+        $this->columns[$this->columnIndex]['props'][] = 'ZEROFILL';
+
+        return $this;
+    }
+
+    public function primary()
+    {
+        $this->primaryKey[]                            = $this->columns[$this->columnIndex]['name'];
+        $this->columns[$this->columnIndex]['nullable'] = false;
+
+        return $this;
+    }
+
+    public function index($type = null)
+    {
+        $indexColumns = [
+            'name' => $this->columns[$this->columnIndex]['name'],
+        ];
+        if (!\is_null($type)) {
+            $indexColumns['type'] = $type;
+        }
+
+        $this->indexColumns[] = $indexColumns;
+
+        return $this;
+    }
+
+    public function unique($column = null)
+    {
+        if (\is_null($column)) {
+            $this->uniqueIndex[] = $this->columns[$this->columnIndex]['name'];
+        } else {
+            $this->uniqueIndex[] = $column;
+        }
+
+        return $this;
+    }
+
+    /**
+     * Override the storage engine used by create(). Only an alphanumeric engine name is accepted,
+     * since the value is interpolated into DDL that cannot be parameterized.
+     *
+     * @param string $engine
+     *
+     * @return $this
+     */
+    public function engine($engine)
+    {
+        if (preg_match('/^[A-Za-z0-9_]+$/', (string) $engine) === 1) {
+            $this->engine = $engine;
+        }
+
+        return $this;
+    }
+
+    public function foreign($ref, $refCol)
+    {
+        $this->fkID          = \count($this->foreignKeys);
+        $this->foreignKeys[] = [
+            'column'  => $this->columns[$this->columnIndex]['name'],
+            'ref'     => $this->_prefix . $ref,
+            'ref_col' => $refCol,
+        ];
+
+        return $this;
+    }
+
+    public function onDelete()
+    {
+        $this->foreignKeys[$this->fkID]['method'] = 'onDelete';
+
+        return $this;
+    }
+
+    public function onUpdate()
+    {
+        $this->foreignKeys[$this->fkID]['method'] = 'onUpdate';
+
+        return $this;
+    }
+
+    public function restrict()
+    {
+        if (\array_key_exists('method', $this->foreignKeys[$this->fkID])) {
+            $this->foreignKeys[$this->fkID][$this->foreignKeys[$this->fkID]['method']] = 'RESTRICT';
+        } else {
+            $this->foreignKeys[$this->fkID]['both'] = 'RESTRICT';
+        }
+
+        return $this;
+    }
+
+    public function setNull()
+    {
+        if (\array_key_exists('method', $this->foreignKeys[$this->fkID])) {
+            $this->foreignKeys[$this->fkID][$this->foreignKeys[$this->fkID]['method']] = 'SET NULL';
+        } else {
+            $this->foreignKeys[$this->fkID]['both'] = 'SET NULL';
+        }
+
+        return $this;
+    }
+
+    public function cascade()
+    {
+        if (\array_key_exists('method', $this->foreignKeys[$this->fkID])) {
+            $this->foreignKeys[$this->fkID][$this->foreignKeys[$this->fkID]['method']] = 'CASCADE';
+        } else {
+            $this->foreignKeys[$this->fkID]['both'] = 'CASCADE';
+        }
+
+        return $this;
+    }
+
+    public function dropForeign($keys)
+    {
+        $this->applyDropClause('dropForeign', 'dropForeign', $this->buildDropForeignClause($keys));
+
+        return $this;
+    }
+
+    public function dropIndex($indexes)
+    {
+        $this->applyDropClause('dropIndex', 'dropIndex', $this->buildDropIndexClause($indexes));
+
+        return $this;
+    }
+
+    public function dropPrimary()
+    {
+        $this->applyDropClause('dropPrimary', 'dropPrimary', ' DROP PRIMARY KEY');
+
+        return $this;
+    }
+
+    public function dropUnique($indexes)
+    {
+        $this->applyDropClause('dropUnique', 'dropIndex', $this->buildDropIndexClause($indexes));
+
+        return $this;
+    }
+
+    public function dropTimestamps()
+    {
+        $this->applyDropClause('dropTimestamps', 'dropTimestamps', ' DROP COLUMN created_at, DROP COLUMN updated_at');
+
+        return $this;
+    }
+
+    public function length($length)
+    {
+        if (\is_array($length)) {
+            $l = '';
+            foreach ($length as $e) {
+                $l .= "'{$e}',";
+            }
+
+            $length = rtrim($l, ',');
+        }
+
+        $this->columns[$this->columnIndex]['length'] = $length;
+
+        return $this;
+    }
+
+    private function buildDropIndexClause($indexes)
+    {
+        if (\is_array($indexes)) {
+            $clauses = [];
+            foreach ($indexes as $index) {
+                $clauses[] = " DROP INDEX `{$index}`";
+            }
+
+            return implode(',', $clauses);
+        }
+
+        return " DROP INDEX `{$indexes}`";
+    }
+
+    private function buildDropForeignClause($keys)
+    {
+        if (\is_array($keys)) {
+            $clauses = [];
+            foreach ($keys as $key) {
+                $clauses[] = " DROP FOREIGN KEY `{$key}`";
+            }
+
+            return implode(',', $clauses);
+        }
+
+        return " DROP FOREIGN KEY `{$keys}`";
+    }
+
+    private function applyDropClause($directMethod, $editKey, $clause)
+    {
+        if ($this->method === $directMethod) {
+            $this->_sql = "ALTER TABLE `{$this->table}`" . $clause;
+        } else {
+            $this->_edit[$editKey] = $clause;
+        }
+    }
+
+    private function getCollation()
+    {
+        $collate = null;
+        if (Connection::has_cap('collation')) {
+            if (!empty(Connection::prop('charset'))) {
+                $collate .= 'DEFAULT CHARACTER SET ' . Connection::prop('charset');
+            }
+
+            if (!empty(Connection::prop('collate'))) {
+                $collate .= ' COLLATE ' . Connection::prop('collate');
+            }
+        }
+
+        return $collate;
+    }
+
+    private function processQueryArr($queriesToAdd)
+    {
+        $query = '';
+        foreach ($queriesToAdd as $key => $queryToAdd) {
+            if (empty($queryToAdd)) {
+                continue;
+            }
+
+            $query .= empty($query) || $query[\strlen($query) - 1] === ',' ? '' : ',';
+            $query .= $queryToAdd;
+        }
+
+        return $query;
+    }
+
+    private function addColumnQuery()
+    {
+        if (!\is_array($this->columns)) {
+            return '';
+        }
+
+        $query = '';
+        foreach ($this->columns as $id => $column) {
+            if ($id > 0) {
+                $query .= "\n, ";
+            }
+
+            if (isset($column['change'])) {
+                $query .= 'MODIFY COLUMN ';
+            } elseif ($this->method === 'edit') {
+                $query .= 'ADD COLUMN ';
+            }
+
+            $query .= $column['name'] . ' ' . $column['type'];
+            if (!empty($column['length'])) {
+                $query .= '(' . $column['length'] . ')';
+            } elseif (isset($column['precision'], $column['scale'])) {
+                $query .= '(' . $column['precision'] . ', ' . $column['scale'] . ')';
+            } else {
+                $query .= ' ';
+            }
+
+            if (!empty($column['unsigned'])) {
+                $query .= " {$column['unsigned']}";
+            }
+
+            if (!empty($column['nullable'])) {
+                $query .= ' NULL';
+            } else {
+                $query .= ' NOT NULL';
+            }
+
+            if (\array_key_exists('default', $column)) {
+                if (!\in_array($column['default'], ['CURRENT_TIMESTAMP', 'NULL']) && !\is_int($column['default'])) {
+                    $column['default'] = "'{$column['default']}'";
+                }
+
+                $query .= ' DEFAULT ' . $column['default'];
+            }
+
+            if (!empty($column['props'])) {
+                $query .= ' ' . implode(' ', $column['props']);
+            }
+        }
+
+        return $query;
+    }
+
+    private function dropColumnQuery()
+    {
+        if (!\is_array($this->columnsToDrop)) {
+            return '';
+        }
+
+        $query = '';
+        foreach ($this->columnsToDrop as $id => $column) {
+            if ($id > 0) {
+                $query .= "\n, ";
+            }
+
+            $query .= "DROP {$column}";
+        }
+
+        return $query;
+    }
+
+    private function addPrimaryKeyQuery()
+    {
+        if (!\is_array($this->primaryKey) || \count($this->primaryKey) === 0) {
+            return '';
+        }
+
+        $query = "\n";
+        if ($this->method === 'edit') {
+            $query .= ' ADD ';
+        }
+
+        $query .= "PRIMARY KEY (\n";
+        $query .= implode(', ', $this->primaryKey);
+        $query .= "\n)";
+
+        return $query;
+    }
+
+    private function addIndexQuery()
+    {
+        if (!\is_array($this->indexColumns) || \count($this->indexColumns) === 0) {
+            return '';
+        }
+
+        $query = '';
+        foreach ($this->indexColumns as $key => $indexColumn) {
+            if ($key > 0) {
+                $query .= "\n, ";
+            }
+
+            if ($this->method === 'edit') {
+                $query .= ' ADD ';
+            }
+
+            $query .= (
+                isset($indexColumn['type']) ? $indexColumn['type'] : null
+            ) . "INDEX {$indexColumn['name']}_INDEX ({$indexColumn['name']} ASC)";
+        }
+
+        return $query;
+    }
+
+    private function addUniqueIndexQuery()
+    {
+        if (!\is_array($this->uniqueIndex) || \count($this->uniqueIndex) === 0) {
+            return '';
+        }
+
+        $addPrefix = $this->method === 'edit' ? ' ADD ' : '';
+        $query     = '';
+        foreach ($this->uniqueIndex as $key => $uniqueColumn) {
+            if (\is_array($uniqueColumn)) {
+                $query .= "\n" . $addPrefix . 'UNIQUE INDEX ' . implode('_', $uniqueColumn) . '_UNIQUE (' . implode(',', $uniqueColumn) . '),';
+            } else {
+                $query .= "\n" . $addPrefix . "UNIQUE INDEX {$uniqueColumn}_UNIQUE ({$uniqueColumn} ASC),";
+            }
+        }
+
+        return rtrim($query, ',');
+    }
+
+    private function addForeignKeyQuery()
+    {
+        if (!\is_array($this->foreignKeys) || \count($this->foreignKeys) === 0) {
+            return '';
+        }
+
+        $query = '';
+        foreach ($this->foreignKeys as $fkId => $foreignKey) {
+            $query .= " CONSTRAINT `{$this->foreignKeyName($foreignKey['column'])}`";
+            $query .= " FOREIGN KEY ({$foreignKey['column']}) REFERENCES {$foreignKey['ref']} ";
+            $query .= "({$foreignKey['ref_col']})";
+            $query .= (isset($foreignKey['onDelete']) ? " ON DELETE {$foreignKey['onDelete']}" : null);
+            $query .= (isset($foreignKey['onUpdate']) ? " ON UPDATE {$foreignKey['onUpdate']}" : null);
+            $query .= (isset($foreignKey['both']) ? " ON DELETE {$foreignKey['both']} ON UPDATE {$foreignKey['both']}" : null);
+            $query .= ',';
+        }
+
+        return rtrim($query, ',');
+    }
+
+    /**
+     * Deterministic constraint name for a foreign key, so dropForeign() has a name to target.
+     * Left unnamed, MySQL assigns a positional `<table>_ibfk_N` that shifts whenever another key is
+     * added. Names over MySQL's 64-character identifier limit fall back to a hashed suffix.
+     *
+     * @param string $column
+     *
+     * @return string
+     */
+    private function foreignKeyName($column)
+    {
+        $name = "{$this->table}_{$column}_fk";
+
+        return \strlen($name) <= 64 ? $name : substr($this->table, 0, 27) . '_' . md5($column) . '_fk';
+    }
+
+    private function isValidType($type)
+    {
+        // phpcs:disable Squiz.Arrays.ArrayDeclaration.ValueNoNewline
+        return \in_array(
+            $type,
+            [
+                'CHAR', 'VARCHAR', 'BINARY', 'JSON',
+                'VARBINARY', 'TINYBLOB', 'TINYTEXT', 'TEXT', 'BLOB',
+                'MEDIUMTEXT', 'MEDIUMBLOB', 'LONGTEXT', 'LONGBLOB',
+                'ENUM', 'SET', 'BIT', 'TINYINT', 'BOOL', 'BOOLEAN', 'SMALLINT',
+                'MEDIUMINT', 'INT', 'INTEGER', 'BIGINT', 'FLOAT',
+                'FLOAT', 'DOUBLE', 'DOUBLE PRECISION', 'DECIMAL', 'DEC', 'DATE', 'DATETIME', 'TIMESTAMP', 'TIME', 'YEAR',
+            ]
+        );
+    }
+}

@@ -1,0 +1,587 @@
+<?php
+
+namespace BitApps\BitConnect\Services;
+
+// Prevent direct script access
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+use BitApps\BitConnect\Config;
+use BitApps\BitConnect\Deps\BitApps\WPDatabase\Collection;
+use BitApps\BitConnect\Deps\BitApps\WPDatabase\Connection;
+use BitApps\BitConnect\Deps\BitApps\WPDatabase\Model;
+use BitApps\BitConnect\Deps\BitApps\WPKit\Hooks\Hooks;
+use BitApps\BitConnect\Enum\PostTypes;
+use BitApps\BitConnect\Enum\ReportReasons;
+use BitApps\BitConnect\Enum\ReportStatus;
+use BitApps\BitConnect\Model\Report;
+use InvalidArgumentException;
+use WP_Comment;
+use WP_Post;
+
+/**
+ * Filing and resolving reports.
+ *
+ * Everything that decides whether a report is allowed lives here rather than in
+ * the controller, because the same rules have to hold whoever asks: the portal,
+ * a future bulk tool, WP-CLI.
+ */
+final class ReportService
+{
+    public const TARGET_POST = 'post';
+
+    public const TARGET_COMMENT = 'comment';
+
+    /**
+     * Hard cap on rows read to build the queue.
+     *
+     * Pending reports are self-limiting in practice — they exist only until
+     * someone reviews them — but an unbounded read is still an unbounded read.
+     * When this bites, the response says so rather than quietly showing a
+     * shorter queue than there is.
+     */
+    private const QUEUE_ROW_CAP = 1000;
+
+    /**
+     * Transient holding the queue badge's count.
+     */
+    private const PENDING_COUNT_KEY = 'bit_connect_reports_pending_targets';
+
+    /**
+     * Targets a moderator is removing through the Reports screen right now,
+     * keyed `type:id`. See removingFor().
+     *
+     * @var array<string, true>
+     */
+    private static array $resolvingElsewhere = [];
+
+    /**
+     * Closes the reports on content that no longer exists.
+     *
+     * A topic or comment can go without a moderator deciding anything — its
+     * author deletes it, an editor empties it from wp-admin, a topic takes its
+     * comments with it — and its pending reports stayed in the queue, a card
+     * for something nobody can open. They are closed as removed, which is what
+     * happened to the content; the rows stay, so the history does too.
+     */
+    public static function registerHooks(): void
+    {
+        Hooks::addAction('deleted_post', [self::class, 'handlePostDeleted'], 10, 2);
+        Hooks::addAction('deleted_comment', [self::class, 'handleCommentDeleted']);
+    }
+
+    /**
+     * Runs a moderator's removal without closing that target's reports.
+     *
+     * The Reports screen destroys the content first and resolves second, with
+     * the moderator's note and the reporters' notices. Left to the delete
+     * hook, the reports would already be closed by then and the resolve would
+     * answer "nothing left to review". Only this target is held back: the
+     * comments a removed topic takes with it still close on their own.
+     *
+     * @template T
+     *
+     * @param callable(): T $remove
+     *
+     * @return T
+     */
+    public static function removingFor(string $targetType, int $targetId, callable $remove)
+    {
+        $key = $targetType . ':' . $targetId;
+        self::$resolvingElsewhere[$key] = true;
+
+        try {
+            return $remove();
+        } finally {
+            unset(self::$resolvingElsewhere[$key]);
+        }
+    }
+
+    /**
+     * @param int   $postId
+     * @param mixed $post
+     */
+    public static function handlePostDeleted($postId, $post = null): void
+    {
+        if ($post instanceof WP_Post && $post->post_type !== PostTypes::BIT_CONNECT->value) {
+            return;
+        }
+
+        self::closeDeleted(self::TARGET_POST, (int) $postId);
+    }
+
+    /**
+     * @param int|string $commentId
+     */
+    public static function handleCommentDeleted($commentId): void
+    {
+        self::closeDeleted(self::TARGET_COMMENT, (int) $commentId);
+    }
+
+    private static function closeDeleted(string $targetType, int $targetId): void
+    {
+        if (isset(self::$resolvingElsewhere[$targetType . ':' . $targetId])) {
+            return;
+        }
+
+        // A delete hook must not throw: the content is already gone, and a
+        // failed write here leaves the reports as they were, which is no worse
+        // than before this hook existed.
+        try {
+            self::resolveTarget($targetType, $targetId, ReportStatus::RESOLVED_REMOVED);
+        } catch (InvalidArgumentException $e) {
+            return;
+        }
+    }
+
+    /**
+     * Files a report, or explains why it cannot be filed.
+     *
+     * @throws InvalidArgumentException with a message meant for the reporter
+     *
+     * @return array{pending: int, should_hide: bool}
+     */
+    public static function file(string $targetType, int $targetId, string $reason, string $details = ''): array
+    {
+        $reporterId = get_current_user_id();
+
+        if ($reporterId <= 0) {
+            throw new InvalidArgumentException(esc_html__('You must be logged in to report anything.', 'bit-connect'));
+        }
+
+        $reasonCase = ReportReasons::tryFrom($reason);
+
+        if ($reasonCase === null) {
+            throw new InvalidArgumentException(esc_html__('That is not a reason this forum recognises.', 'bit-connect'));
+        }
+
+        $details = trim($details);
+
+        if (ReportReasons::requiresDetails($reasonCase) && $details === '') {
+            throw new InvalidArgumentException(esc_html__('Please say what is wrong with it.', 'bit-connect'));
+        }
+
+        $author = self::targetAuthor($targetType, $targetId);
+
+        if ($author === null) {
+            throw new InvalidArgumentException(esc_html__('That content no longer exists.', 'bit-connect'));
+        }
+
+        if ($author === $reporterId) {
+            throw new InvalidArgumentException(esc_html__('You cannot report your own content.', 'bit-connect'));
+        }
+
+        if (Report::alreadyReported($reporterId, $targetType, $targetId)) {
+            throw new InvalidArgumentException(esc_html__('You have already reported this.', 'bit-connect'));
+        }
+
+        if (!ReportRateLimiter::isAllowed($reporterId)) {
+            throw new InvalidArgumentException(esc_html(ReportRateLimiter::errorMessage()));
+        }
+
+        $stored = Report::insert(
+            [
+                'target_type'   => $targetType,
+                'target_id'     => $targetId,
+                'target_author' => $author,
+                'reporter_id'   => $reporterId,
+                'reason'        => $reasonCase->value,
+                'details'       => $details === '' ? null : $details,
+                'status'        => ReportStatus::PENDING->value,
+            ]
+        );
+
+        // insert() answers false rather than throwing. Without this the caller
+        // is told the report was filed while nothing was written — which is
+        // exactly how a duplicate-column bug in this method went unnoticed
+        // through a green test run.
+        if ($stored === false) {
+            throw new InvalidArgumentException(esc_html__('Your report could not be saved. Please try again.', 'bit-connect'));
+        }
+
+        // Only after the row is stored, so a rejected report costs the reporter
+        // nothing.
+        ReportRateLimiter::consume($reporterId);
+        self::flushPendingCount();
+
+        $pending = Report::pendingCount($targetType, $targetId);
+
+        return [
+            'pending'     => $pending,
+            'should_hide' => self::shouldAutoHide($targetType, $targetId, $author, $pending),
+        ];
+    }
+
+    /**
+     * Whether this target should now be hidden from public view.
+     *
+     * This plugin never hides anything on its own: it takes reports, counts
+     * them and shows them in the moderation queue, and a person decides. A
+     * site or plugin that wants a different policy answers the extension point
+     * below; any exemption or threshold it applies is its own.
+     */
+    public static function shouldAutoHide(string $targetType, int $targetId, int $author, ?int $pending = null): bool
+    {
+        return ExtensionPoints::autoHideOnReports($targetType, $targetId, $author, $pending);
+    }
+
+    /**
+     * Everyone still waiting to hear what happened to one target.
+     *
+     * Must be read *before* resolveTarget(): pendingFor() answers with open
+     * reports only, so by the time a decision has been recorded there is nobody
+     * left to tell. Getting this order wrong does not fail — it silently
+     * notifies no one, which is the hardest kind of bug to notice in a feature
+     * whose whole job is to send things.
+     *
+     * @return array<int, int>
+     */
+    public static function pendingReporterIds(string $targetType, int $targetId): array
+    {
+        $rows = Report::pendingFor($targetType, $targetId);
+
+        // get() answers with a Collection, and a bare Model when a limit of one
+        // matched exactly one row. Casting either to an array yields its own
+        // properties rather than the rows, and the failure mode here is an
+        // empty recipient list that looks deliberate — nobody is told their
+        // report was decided. self::asList() unwraps both.
+        $ids = array_map(
+            static fn ($row): int => (int) $row->reporter_id,
+            self::asList($rows)
+        );
+
+        return array_values(array_unique(array_filter($ids, static fn (int $id): bool => $id > 0)));
+    }
+
+    /**
+     * Closes every pending report on one target with the same answer.
+     *
+     * Reports are resolved per target rather than per row: a moderator reviews
+     * the content once, and five people reporting the same comment is one
+     * decision, not five.
+     *
+     * @return int how many reports were closed
+     */
+    public static function resolveTarget(string $targetType, int $targetId, ReportStatus $status, string $note = ''): int
+    {
+        if ($status === ReportStatus::PENDING) {
+            throw new InvalidArgumentException('A report cannot be resolved as still pending.');
+        }
+
+        $pending = Report::pendingFor($targetType, $targetId);
+        // Not count((array) $pending): a Collection casts to a one-element
+        // array whatever it holds, so an empty queue counted as one and the
+        // early return below never fired.
+        $count = \count(self::asList($pending));
+
+        if ($count === 0) {
+            return 0;
+        }
+
+        // Written through Connection rather than the model layer, which cannot run
+        // this: QueryBuilder::update() builds a statement and returns $this
+        // without executing (exec() is private), and save() on a fetched row
+        // emits a mismatched column/value list. Both fail silently enough that
+        // the queue simply never emptied.
+
+        $updated = Connection::update(
+            Config::withDBPrefix('reports'),
+            [
+                'status'          => $status->value,
+                'resolved_by'     => get_current_user_id(),
+                'resolved_at'     => current_time('mysql', true),
+                'resolution_note' => $note === '' ? null : $note,
+                'updated_at'      => current_time('mysql', true),
+            ],
+            [
+                'target_type' => $targetType,
+                'target_id'   => $targetId,
+                'status'      => ReportStatus::PENDING->value,
+            ],
+            ['%s', '%d', '%s', '%s', '%s'],
+            ['%s', '%d', '%s']
+        );
+
+        if ($updated === false) {
+            throw new InvalidArgumentException(esc_html__('The reports could not be updated. Please try again.', 'bit-connect'));
+        }
+
+        self::flushPendingCount();
+
+        return (int) $updated;
+    }
+
+    /**
+     * The moderation queue: one entry per reported item, not per report.
+     *
+     * Grouped in PHP rather than by SQL because each entry needs the reasons and
+     * reporters behind it, which a GROUP BY would have to re-query for anyway,
+     * and the pending set is small by nature.
+     *
+     * @param array{status?: string, page?: int, per_page?: int} $filters
+     *
+     * @return array{data: array<int, array<string, mixed>>, pagination: array<string, int>, truncated: bool}
+     */
+    public static function queue(array $filters = []): array
+    {
+        $page = max(1, (int) ($filters['page'] ?? 1));
+        $perPage = min(100, max(1, (int) ($filters['per_page'] ?? 20)));
+        $status = (string) ($filters['status'] ?? ReportStatus::PENDING->value);
+
+        // Kept and dismissed leave the content exactly as it was, so the screen
+        // offers one of them and shows both together — reports dismissed before
+        // that still belong beside the ones kept since.
+        $statuses = $status === ReportStatus::RESOLVED_KEPT->value
+            ? [ReportStatus::RESOLVED_KEPT->value, ReportStatus::DISMISSED->value]
+            : [$status];
+
+        $rows = self::asList(
+            Report::whereIn('status', $statuses)
+                ->orderBy('created_at')
+                ->desc()
+                ->take((string) self::QUEUE_ROW_CAP)
+                ->get()
+        );
+
+        // Every name and every reported item is fetched once, up front, instead
+        // of one query per row deep inside the loop. A queue of 200 reports over
+        // 60 topics was ~260 round trips to build one page; this is three.
+        self::primeQueueCaches($rows);
+
+        $groups = [];
+
+        foreach ($rows as $row) {
+            $key = $row->target_type . ':' . $row->target_id;
+
+            if (!isset($groups[$key])) {
+                $groups[$key] = [
+                    'target_type'   => (string) $row->target_type,
+                    'target_id'     => (int) $row->target_id,
+                    'target_author' => (int) $row->target_author,
+                    'count'         => 0,
+                    'reasons'       => [],
+                    'reporters'     => [],
+                    'details'       => [],
+                    'first_at'      => (string) $row->created_at,
+                    'latest_at'     => (string) $row->created_at,
+                ];
+            }
+
+            ++$groups[$key]['count'];
+            $reason = (string) $row->reason;
+            $groups[$key]['reasons'][$reason] = ($groups[$key]['reasons'][$reason] ?? 0) + 1;
+
+            $reporter = get_userdata((int) $row->reporter_id);
+            $groups[$key]['reporters'][] = [
+                'id'   => (int) $row->reporter_id,
+                'name' => $reporter ? $reporter->display_name : '',
+            ];
+
+            if ($row->details !== null && (string) $row->details !== '') {
+                $groups[$key]['details'][] = (string) $row->details;
+            }
+
+            // Rows arrive newest-first, so the last one seen is the oldest.
+            $groups[$key]['first_at'] = (string) $row->created_at;
+        }
+
+        $entries = array_values(array_map([self::class, 'hydrateQueueEntry'], $groups));
+        $total = \count($entries);
+
+        return [
+            'data'       => \array_slice($entries, ($page - 1) * $perPage, $perPage),
+            'pagination' => [
+                'total'        => $total,
+                'per_page'     => $perPage,
+                'current_page' => $page,
+                'total_pages'  => (int) ceil($total / $perPage),
+            ],
+            'truncated' => \count($rows) >= self::QUEUE_ROW_CAP,
+        ];
+    }
+
+    /**
+     * How many separate items are waiting for a moderator.
+     *
+     * Items, not rows: five people reporting one comment is one thing to look
+     * at, and it is the queue's own unit — a badge reading 5 over a queue with
+     * one entry in it is worse than no badge.
+     *
+     * Cached because this runs on every admin page load for every moderator,
+     * and dropped the moment a report is filed or resolved, so the number is
+     * only ever stale for people who changed nothing.
+     */
+    public static function pendingTargetCount(): int
+    {
+        $cached = get_transient(self::PENDING_COUNT_KEY);
+
+        if ($cached !== false) {
+            return (int) $cached;
+        }
+
+
+        $table = Config::withDBPrefix('reports');
+        $count = (int) Connection::get_var(
+            Connection::prepare(
+                "SELECT COUNT(DISTINCT target_type, target_id) FROM {$table} WHERE status = %s",
+                ReportStatus::PENDING->value
+            )
+        );
+
+        set_transient(self::PENDING_COUNT_KEY, $count, HOUR_IN_SECONDS);
+
+        return $count;
+    }
+
+    /**
+     * Drops the cached badge count. Called wherever the queue changes.
+     */
+    public static function flushPendingCount(): void
+    {
+        delete_transient(self::PENDING_COUNT_KEY);
+
+        // The dashboard counts the same queue.
+        DashboardCache::forget();
+    }
+
+    /**
+     * The author of a target, or null when it no longer exists.
+     */
+    public static function targetAuthor(string $targetType, int $targetId): ?int
+    {
+        if ($targetType === self::TARGET_COMMENT) {
+            $comment = get_comment($targetId);
+
+            return $comment instanceof WP_Comment ? (int) $comment->user_id : null;
+        }
+
+        $post = get_post($targetId);
+
+        return $post instanceof WP_Post ? (int) $post->post_author : null;
+    }
+
+    /**
+     * Whether a target type is one this forum accepts reports about.
+     */
+    public static function isValidTargetType(string $targetType): bool
+    {
+        return \in_array($targetType, [self::TARGET_POST, self::TARGET_COMMENT], true);
+    }
+
+    /**
+     * Whatever a report query answered, as a plain list of rows.
+     *
+     * Lives here rather than on the model because every caller is in this
+     * class, and because the test double replaces Report wholesale — a helper
+     * on the model would be invisible to it.
+     *
+     * get() answers with a Collection, and with a bare Model when a limit of
+     * one matched exactly one row. Casting either to an array yields its own
+     * properties rather than the rows: the queue grouped that single bogus
+     * element into one all-zero card — "Topic #0", written by "(deleted
+     * account)" — and every real report vanished from the moderation screen.
+     *
+     * @param mixed $rows
+     *
+     * @return array<int, object>
+     */
+    private static function asList($rows): array
+    {
+        if ($rows instanceof Collection) {
+            return array_values($rows->all());
+        }
+
+        if ($rows instanceof Model) {
+            return [$rows];
+        }
+
+        return \is_array($rows) ? array_values($rows) : [];
+    }
+
+    /**
+     * Warms the caches every later get_userdata()/get_post()/get_comment() hits.
+     *
+     * WordPress answers those from its object cache once the id is in it, so
+     * nothing downstream has to change — the calls stay where they read best and
+     * simply stop going to the database.
+     *
+     * @param array<int, mixed> $rows
+     */
+    private static function primeQueueCaches(array $rows): void
+    {
+        $userIds = [];
+        $postIds = [];
+        $commentIds = [];
+
+        foreach ($rows as $row) {
+            $userIds[(int) $row->reporter_id] = true;
+            $userIds[(int) $row->target_author] = true;
+
+            if ((string) $row->target_type === self::TARGET_COMMENT) {
+                $commentIds[(int) $row->target_id] = true;
+            } else {
+                $postIds[(int) $row->target_id] = true;
+            }
+        }
+
+        unset($userIds[0]);
+
+        if ($userIds !== []) {
+            // cache_results is on by default, which is the whole point of the
+            // call: the rows land in the user cache and get_userdata() is free.
+            get_users(['include' => array_keys($userIds), 'fields' => 'all_with_meta']);
+        }
+
+        if ($postIds !== []) {
+            _prime_post_caches(array_keys($postIds), false, false);
+        }
+
+        if ($commentIds !== []) {
+            _prime_comment_caches(array_keys($commentIds), false);
+        }
+    }
+
+    /**
+     * Fills in what the queue needs to show about the reported item itself.
+     *
+     * @param array<string, mixed> $group
+     *
+     * @return array<string, mixed>
+     */
+    private static function hydrateQueueEntry(array $group): array
+    {
+        $type = (string) $group['target_type'];
+        $id = (int) $group['target_id'];
+        $author = get_userdata((int) $group['target_author']);
+
+        $excerpt = '';
+        $title = '';
+        $exists = false;
+        $link = '';
+
+        if ($type === self::TARGET_COMMENT) {
+            $comment = get_comment($id);
+            $exists = $comment instanceof WP_Comment;
+            $excerpt = $exists ? ActivityLogService::excerpt($comment->comment_content) : '';
+            $link = $exists ? (string) get_comment_link($comment) : '';
+        } else {
+            $post = get_post($id);
+            $exists = $post instanceof WP_Post;
+            $title = $exists ? (string) $post->post_title : '';
+            $excerpt = $exists ? ActivityLogService::excerpt($post->post_content) : '';
+            $link = $exists ? (string) get_permalink($post) : '';
+        }
+
+        $group['target_author_name'] = $author ? $author->display_name : '';
+        $group['exists'] = $exists;
+        $group['title'] = $title;
+        $group['excerpt'] = $excerpt;
+        $group['link'] = $link;
+        // Reasons are stored as slugs; the label belongs with them so the queue
+        // does not have to keep its own copy of the enum.
+        $group['reason_labels'] = ReportReasons::labels();
+
+        return $group;
+    }
+}

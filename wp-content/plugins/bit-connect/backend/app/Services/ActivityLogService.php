@@ -1,0 +1,412 @@
+<?php
+
+namespace BitApps\BitConnect\Services;
+
+// Prevent direct script access
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+use BitApps\BitConnect\Deps\BitApps\WPDatabase\Collection;
+use BitApps\BitConnect\Enum\ActivityActions;
+use BitApps\BitConnect\Model\ActivityLog;
+use DateTimeImmutable;
+use DateTimeZone;
+use WP_Post;
+
+/**
+ * Records and reads what people did to content they did not write.
+ *
+ * The rule every call site follows: log only when the actor is not the author.
+ * A member editing their own reply needs no log — the "(edited)" note on the
+ * comment already says so, and recording every self-edit would bury the handful
+ * of rows that matter under thousands that do not.
+ *
+ * That check cannot live in PermissionService. Those are pure predicates, called
+ * speculatively — currentUserCapabilities() asks all fourteen on every request —
+ * so a log write hidden inside one would fire for questions nobody acted on.
+ * The controllers decide, after the write succeeds.
+ */
+final class ActivityLogService
+{
+    public const TARGET_POST = 'post';
+
+    public const TARGET_COMMENT = 'comment';
+
+    /**
+     * The actor id kept for something the plugin did on its own.
+     *
+     * Zero because no user did it. It is a value record() refuses, which is the
+     * point: a row with no actor can only be written through recordAsSystem(),
+     * so nothing reaches it by forgetting to log in.
+     */
+    public const SYSTEM_ACTOR = 0;
+
+    public const PERIOD_TODAY = 'today';
+
+    public const PERIOD_YESTERDAY = 'yesterday';
+
+    public const PERIOD_WEEK = '7d';
+
+    public const PERIOD_MONTH = '30d';
+
+    public const PERIOD_QUARTER = '90d';
+
+    /** The windows the feed can be narrowed to, newest-reaching first. */
+    public const PERIODS = [
+        self::PERIOD_TODAY,
+        self::PERIOD_YESTERDAY,
+        self::PERIOD_WEEK,
+        self::PERIOD_MONTH,
+        self::PERIOD_QUARTER,
+    ];
+
+    /**
+     * How much of the before/after text is kept.
+     *
+     * Enough to see what changed in a diff, capped so the table cannot be grown
+     * without bound by someone editing a very long topic repeatedly.
+     */
+    private const EXCERPT_LIMIT = 2000;
+
+    /**
+     * Writes one row. Silently does nothing when there is no actor.
+     *
+     * `$action` is one of this plugin's, or the slug of one another plugin
+     * named through ExtensionPoints::activityActions(); any other slug is
+     * not written.
+     *
+     * @param array<string, mixed> $context free-form detail, stored as JSON
+     */
+    public static function record(
+        ActivityActions|string $action,
+        string $targetType,
+        int $targetId,
+        int $targetAuthor,
+        array $context = [],
+        ?string $reason = null
+    ): void {
+        $actorId = get_current_user_id();
+
+        if ($actorId <= 0) {
+            return;
+        }
+
+        self::write($actorId, $action, $targetType, $targetId, $targetAuthor, $context, $reason);
+    }
+
+    /**
+     * Records something the plugin did by rule rather than by decision.
+     *
+     * The auto-hide is the case this exists for. A report crossing the threshold
+     * takes content out of sight, and recording that against the reporter reads
+     * as though they exercised a power they do not have — the whole point of a
+     * threshold is that nobody chose. record() cannot express it: it reads the
+     * current user, and drops the row when there is not one.
+     *
+     * @param array<string, mixed> $context
+     */
+    public static function recordAsSystem(
+        ActivityActions|string $action,
+        string $targetType,
+        int $targetId,
+        int $targetAuthor,
+        array $context = [],
+        ?string $reason = null
+    ): void {
+        self::write(self::SYSTEM_ACTOR, $action, $targetType, $targetId, $targetAuthor, $context, $reason);
+    }
+
+    /**
+     * Records an action only when the actor is not the author.
+     *
+     * The one guard every call site would otherwise repeat, in the one place it
+     * can be got wrong once instead of six times.
+     *
+     * @param array<string, mixed> $context
+     */
+    public static function recordIfNotAuthor(
+        ActivityActions|string $action,
+        string $targetType,
+        int $targetId,
+        int $targetAuthor,
+        array $context = [],
+        ?string $reason = null
+    ): void {
+        if ($targetAuthor === get_current_user_id()) {
+            return;
+        }
+
+        self::record($action, $targetType, $targetId, $targetAuthor, $context, $reason);
+    }
+
+    /**
+     * Trims text for storage in the context blob.
+     *
+     * Marks the cut rather than ending mid-sentence with no sign, so a reader
+     * knows the diff they are looking at is partial.
+     */
+    public static function excerpt(?string $text): string
+    {
+        $text = (string) $text;
+
+        if (mb_strlen($text) <= self::EXCERPT_LIMIT) {
+            return $text;
+        }
+
+        return mb_substr($text, 0, self::EXCERPT_LIMIT) . '… [truncated]';
+    }
+
+    /**
+     * The name a row shows for its target, as context to store with it.
+     *
+     * A topic's title, so the Activity screen can head the row with it, as it
+     * does every other row about a topic. Read at write time because the topic
+     * may be deleted by the time anyone looks. A comment has no name of its
+     * own, so it gets nothing.
+     *
+     * @return array{post_title?: string}
+     */
+    public static function titleContext(string $targetType, int $targetId): array
+    {
+        if ($targetType !== self::TARGET_POST) {
+            return [];
+        }
+
+        $post = get_post($targetId);
+
+        return $post instanceof WP_Post ? ['post_title' => (string) $post->post_title] : [];
+    }
+
+    /**
+     * The admin feed: newest first, filterable, paginated.
+     *
+     * @param array{actor?: int, action?: string, target_type?: string, target_id?: int, period?: string, page?: int, per_page?: int} $filters
+     *
+     * @return array{data: array<int, array<string, mixed>>, pagination: array<string, int>}
+     */
+    public static function feed(array $filters = []): array
+    {
+        $page = max(1, (int) ($filters['page'] ?? 1));
+        $perPage = min(100, max(1, (int) ($filters['per_page'] ?? 20)));
+
+        $query = ActivityLog::select(['*']);
+
+        if (!empty($filters['actor'])) {
+            $query = $query->where('actor_id', (int) $filters['actor']);
+        }
+
+        if (!empty($filters['action'])) {
+            $query = $query->where('action', $filters['action']);
+        }
+
+        if (!empty($filters['target_type'])) {
+            $query = $query->where('target_type', $filters['target_type']);
+        }
+
+        // The one search that answers "what has been done to this?" — the
+        // history of a single topic or comment, which is the question a
+        // moderator arrives with when someone disputes what happened to theirs.
+        if (!empty($filters['target_id'])) {
+            $query = $query->where('target_id', (int) $filters['target_id']);
+        }
+
+        $window = self::periodWindow((string) ($filters['period'] ?? ''));
+
+        if ($window !== null) {
+            $query = $query->where('created_at', '>=', $window[0]);
+
+            if ($window[1] !== null) {
+                $query = $query->where('created_at', '<', $window[1]);
+            }
+        }
+
+        // Newest first: orderBy() only names the column, desc() sets the
+        // direction — it takes no second argument.
+        //
+        // id breaks the tie. created_at holds whole seconds, and one bulk action
+        // or report decision writes several rows in the same second. Ordered by
+        // created_at alone, MySQL returns those in any order it likes — so a
+        // lock showed under the unlock that followed it, and paging skipped
+        // some rows and repeated others.
+        $result = $query->orderBy('created_at')->desc()->orderBy('id')->desc()->paginate($page, $perPage);
+
+        return [
+            'data'       => array_map([self::class, 'format'], self::asList($result['data'] ?? [])),
+            'pagination' => [
+                'total'        => (int) ($result['total'] ?? 0),
+                'per_page'     => $perPage,
+                'current_page' => $page,
+                'total_pages'  => (int) ($result['pages'] ?? 0),
+            ],
+        ];
+    }
+
+    /**
+     * A named period as GMT bounds: [from inclusive, to exclusive or null].
+     *
+     * Days are counted on the site's calendar — the timezone under Settings →
+     * General — because that is the calendar the screen files rows under, and
+     * "Yesterday" has to mean the rows under the Yesterday heading. created_at
+     * is GMT, so the site's midnights are converted before they are compared.
+     * An unknown period is no window at all; the request has already refused it.
+     *
+     * @return null|array{0: string, 1: null|string}
+     */
+    public static function periodWindow(string $period): ?array
+    {
+        $daysBack = [
+            self::PERIOD_TODAY     => 0,
+            self::PERIOD_YESTERDAY => 1,
+            self::PERIOD_WEEK      => 6,
+            self::PERIOD_MONTH     => 29,
+            self::PERIOD_QUARTER   => 89,
+        ][$period] ?? null;
+
+        if ($daysBack === null) {
+            return null;
+        }
+
+        $midnight = new DateTimeImmutable('today', wp_timezone());
+        $gmt = new DateTimeZone('UTC');
+        $from = $midnight->modify('-' . $daysBack . ' days')->setTimezone($gmt)->format('Y-m-d H:i:s');
+
+        // Yesterday is the one window that ends before now.
+        $to = $period === self::PERIOD_YESTERDAY ? $midnight->setTimezone($gmt)->format('Y-m-d H:i:s') : null;
+
+        return [$from, $to];
+    }
+
+    /**
+     * Whatever paginate() answered, as a plain list of rows.
+     *
+     * A get() call always answers with a Collection, and casting one to array yields
+     * its protected $items under a mangled key rather than the rows inside it.
+     * The feed therefore serialised as an object holding a single all-zero row
+     * — not a list the admin screen can iterate, so Activity rendered blank.
+     * all() unwraps it; the array branch covers a builder that answers plainly.
+     *
+     * @param mixed $rows
+     *
+     * @return array<int, object>
+     */
+    private static function asList($rows): array
+    {
+        if ($rows instanceof Collection) {
+            return array_values($rows->all());
+        }
+
+        return \is_array($rows) ? array_values($rows) : [];
+    }
+
+    /**
+     * The single insert both entry points go through.
+     *
+     * @param array<string, mixed> $context
+     */
+    private static function write(
+        int $actorId,
+        ActivityActions|string $action,
+        string $targetType,
+        int $targetId,
+        int $targetAuthor,
+        array $context = [],
+        ?string $reason = null
+    ): void {
+        if ($targetId <= 0) {
+            return;
+        }
+
+        // A slug rather than a case is another plugin's action, and is written
+        // only when that plugin has named it — see ExtensionPoints::activityActions().
+        if (\is_string($action) && !isset(ExtensionPoints::activityActions()[$action])) {
+            return;
+        }
+
+        ActivityLog::insert(
+            [
+                'actor_id'      => $actorId,
+                'action'        => \is_string($action) ? $action : $action->value,
+                'target_type'   => $targetType,
+                'target_id'     => $targetId,
+                'target_author' => $targetAuthor,
+                'reason'        => $reason,
+                'context'       => $context === [] ? null : wp_json_encode($context),
+            ]
+        );
+    }
+
+    /**
+     * Shapes one row for the API.
+     *
+     * Names are resolved at read time and may come back empty: an actor whose
+     * account was deleted still leaves their id on the row, and the log would be
+     * worth little if it quietly dropped the entries belonging to them.
+     *
+     * @param mixed $row
+     *
+     * @return array<string, mixed>
+     */
+    private static function format($row): array
+    {
+        $action = ActivityActions::tryFrom((string) $row->action);
+        $actor = get_userdata((int) $row->actor_id);
+        $targetAuthor = get_userdata((int) $row->target_author);
+        $context = \is_string($row->context) ? json_decode($row->context, true) : null;
+        $exists = self::targetExists((string) $row->target_type, (int) $row->target_id);
+
+        return [
+            'id'           => (int) $row->id,
+            'action'       => (string) $row->action,
+            'action_label' => $action
+                ? ActivityActions::translatedLabel($action)
+                : (ExtensionPoints::activityActions()[(string) $row->action] ?? (string) $row->action),
+            'actor'        => [
+                'id'   => (int) $row->actor_id,
+                'name' => $actor ? $actor->display_name : '',
+                'slug' => $actor ? ProfileSlugService::slugFor((int) $row->actor_id) : '',
+                // An empty name means two different things — a deleted account,
+                // or nobody at all — and the screen has to be able to tell them
+                // apart. Without this an auto-hide reads as "(deleted account)",
+                // which invents a person where the rule acted.
+                'is_system' => (int) $row->actor_id === self::SYSTEM_ACTOR,
+            ],
+            'target' => [
+                'type'   => (string) $row->target_type,
+                'id'     => (int) $row->target_id,
+                'author' => [
+                    'id'   => (int) $row->target_author,
+                    'name' => $targetAuthor ? $targetAuthor->display_name : '',
+                ],
+                // False once the row it describes is gone, which is exactly the
+                // case this table exists to survive. The UI shows a title from
+                // the context blob instead of a dead link.
+                'exists' => $exists,
+                // Where the content can be read in the portal, while it can be.
+                // A gone target keeps no link: it would only lead to a 404.
+                'url' => $exists ? self::targetUrl((string) $row->target_type, (int) $row->target_id) : '',
+            ],
+            'reason'     => $row->reason === null ? '' : (string) $row->reason,
+            'context'    => \is_array($context) ? $context : [],
+            'created_at' => (string) $row->created_at,
+        ];
+    }
+
+    private static function targetUrl(string $targetType, int $targetId): string
+    {
+        if ($targetType === self::TARGET_COMMENT) {
+            return PortalLocation::commentUrl($targetId);
+        }
+
+        return PortalLocation::topicUrl($targetId);
+    }
+
+    private static function targetExists(string $targetType, int $targetId): bool
+    {
+        if ($targetType === self::TARGET_COMMENT) {
+            return get_comment($targetId) !== null;
+        }
+
+        return get_post($targetId) !== null;
+    }
+}

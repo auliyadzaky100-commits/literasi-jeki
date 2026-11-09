@@ -1,0 +1,357 @@
+<?php
+
+namespace BitApps\BitConnect\Views;
+
+use BitApps\BitConnect\Config;
+use BitApps\BitConnect\Deps\BitApps\WPKit\Hooks\Hooks;
+use BitApps\BitConnect\Enum\GeneralSettings;
+use BitApps\BitConnect\Enum\Taxonomies;
+use BitApps\BitConnect\Services\AttachmentValidatorService;
+use BitApps\BitConnect\Services\AuthService;
+use BitApps\BitConnect\Services\FollowService;
+use BitApps\BitConnect\Services\NotificationService;
+use BitApps\BitConnect\Services\PortalLocation;
+use BitApps\BitConnect\Services\PortalPreload;
+use BitApps\BitConnect\Services\PortalTaxonomies;
+use BitApps\BitConnect\Services\PostingLimits;
+use BitApps\BitConnect\Services\StageService;
+use BitApps\BitConnect\Services\StatusService;
+use BitApps\BitConnect\Services\TopicTaxonomies;
+use BitApps\BitConnect\SSR\Seo\SeoMeta;
+use WP_Post;
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+
+class BaseView
+{
+    public string $slug;
+
+    public string $version;
+
+    /**
+     * Several owners construct a BaseView per request (route controllers,
+     * ShortCode), and each instance is a distinct callback to WordPress — so
+     * without this guard the config payload and inline scripts printed once
+     * per instance. Register the hooks only for the first instance.
+     */
+    private static bool $hooksRegistered = false;
+
+    public function __construct()
+    {
+        $this->version = Config::VERSION;
+        $this->slug = Config::SLUG . '-sc';
+
+        if (!self::$hooksRegistered) {
+            self::$hooksRegistered = true;
+            Hooks::addAction('wp_enqueue_scripts', [$this, 'enqueueAssets']);
+        }
+    }
+
+    public function registerAssets()
+    {
+        // The bundle has no `@wordpress/interactivity` dependency: nothing in it
+        // imports the package, and declaring it made WordPress load the
+        // runtime (about 40 KB) and its state block on every portal page for
+        // nothing. A module that does import it must add it back here, or the
+        // bare import has no import map entry to resolve against.
+        if (Config::isDev()) {
+            $devUrl = Config::getClientEndDevUrl();
+            wp_register_script_module($this->slug . '-MODULE-vite-client-helper', $devUrl . '/src/config/devHotModule.js', [], null);
+            wp_register_script_module($this->slug . '-MODULE-vite-client', $devUrl . '/@vite/client', [], null);
+            wp_register_script_module($this->slug . '-MODULE-main', $devUrl . '/src/main.tsx', [], null);
+        } else {
+            $codeName = Config::get('BUILD_CODE_NAME_CLIENT');
+            $slug = Config::SLUG;
+            // phpcs:ignore WordPress.WP.EnqueuedResourceParameters.MissingVersion, WordPress.WP.EnqueuedResourceParameters.NotInFooter -- Version is embedded in the filename via $codeName for cache busting.
+            wp_register_script_module($this->slug . '-MODULE-main', Config::get('ASSET_URI') . "/client/main-{$codeName}.js", [], null);
+            wp_register_style($this->slug . '-styles', Config::get('ASSET_URI') . "/client/main-{$slug}-ba-assets-{$codeName}.css", [], $this->version, 'screen');
+        }
+    }
+
+    /**
+     * Create config variable for js.
+     *
+     * @return array
+     */
+    public static function createConfigVariable()
+    {
+        // Get the current WordPress post URL if we're on a post/page
+        $currentPostUrl = '';
+        if (is_singular()) {
+            global $post;
+            if ($post && isset($post->ID)) {
+                $currentPostUrl = get_permalink($post->ID);
+            }
+        } elseif (is_home()) {
+            $currentPostUrl = get_option('home');
+        } elseif (is_front_page()) {
+            $currentPostUrl = get_option('home');
+        } else {
+            $currentPostUrl = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '';
+        }
+
+        // wp_parse_url() returns null for a URL with no path at all — the home
+        // URL of a site installed at the domain root is exactly that — and
+        // trim(null) is deprecated on PHP 8.1+.
+        $currentPath = $currentPostUrl ? trim((string) wp_parse_url($currentPostUrl, PHP_URL_PATH), '/') : '';
+
+        if ($currentPath === '') {
+            $currentPath = '/';
+        } else {
+            $currentPath = '/' . $currentPath;
+        }
+        $userInfo = Config::getCurrentUserInfo();
+        $generalSettings = Config::getOption(GeneralSettings::OPTION_NAME->value, []);
+        $frontendVars = [
+            // Members only. WordPress needs the nonce only to trust a login
+            // cookie, and a guest has none. A guest nonce also expires within a
+            // day, so a page cache that held this HTML longer made every portal
+            // request from that copy fail with "Cookie check failed". Without
+            // it, every guest gets the same page and a cache may keep it.
+            'nonce' => is_user_logged_in() ? wp_create_nonce('wp_rest') : '',
+            // The config atom keys its localStorage blob `${pluginSlug}-config`;
+            // ThemeBoot::script() reads the same key server-side, so the two
+            // fall out of sync on any route that omits this.
+            'pluginSlug'             => Config::SLUG,
+            'assetsURL'              => Config::get('ASSET_URI'),
+            'apiURL'                 => Config::get('API_URL'),
+            'routePrefix'            => Config::VAR_PREFIX,
+            'postURL'                => $currentPath, // WordPress post URL for router basename
+            'settings'               => Config::getOption('settings'),
+            'dateFormat'             => Config::getOption('date_format', false, true),
+            'timeFormat'             => Config::getOption('time_format', false, true),
+            // Settings → General → Timezone, so the portal names every GMT
+            // instant on the site's clock rather than each reader's.
+            'timeZone' => wp_timezone_string(),
+            'siteURL'                => Config::get('SITE_URL'),
+            'version'                => Config::VERSION,
+            'lang'                   => get_locale(),
+            'wpRestURL'              => Config::get('WP_REST_URL'),
+            'ajaxURL'                => admin_url('admin-ajax.php'), // renews a member's nonce — see utils/request/nonce.ts
+            'isLoggedIn'             => $userInfo['isLoggedIn'],
+            'currentUser'            => $userInfo['user'],
+            'currentUserAvatar'      => $userInfo['user'] ? $userInfo['user']['avatar'] : '',
+            'authMode'               => AuthService::getMode(),
+            'customLoginUrl'         => AuthService::customLoginUrl(),
+            'customRegistrationUrl'  => AuthService::customRegistrationUrl(),
+            'canRegister'            => AuthService::canRegister(),
+            'wpLoginURL'             => wp_login_url(),
+            'wpRegisterURL'          => wp_registration_url(),
+            'loginPageCustomization' => AuthService::getSettings()['loginPageCustomization'] ?? ['banner' => '', 'title' => '', 'description' => ''],
+            'communityTitle'         => $generalSettings['communityTitle'] ?? '',
+            // The title the server falls back to when no community title is
+            // set, so a page title set in the browser matches the server's.
+            'siteName' => get_bloginfo('name'),
+            // Whether the site's permalinks end in a slash. The app builds its
+            // own links, and without this every one of them named a URL that
+            // WordPress answers with a 301 to the slashed form — see
+            // utils/route-path.ts.
+            'trailingSlash'       => str_ends_with((string) get_option('permalink_structure'), '/'),
+            'logoLight'           => $generalSettings['logoLight'] ?? '',
+            'logoPermalinkMode'   => $generalSettings['logoPermalinkMode'] ?? 'default',
+            'logoPermalinkCustom' => $generalSettings['logoPermalinkCustom'] ?? '',
+            'portalAccess'        => $generalSettings['portalAccess'] ?? 'everyone',
+            'portalFilters'       => GeneralSettings::portalFilters($generalSettings),
+            'promo'               => GeneralSettings::promo($generalSettings),
+            'sidebarFollowing'    => GeneralSettings::sidebarFollowing($generalSettings),
+            // URL segment => the topics filter its archive pins and the taxonomy
+            // behind it, for every archive the portal serves — including any a
+            // plugin adds, which the app cannot know of in advance.
+            'portalArchives'    => self::portalArchives(),
+            'defaultStageSlug'  => StageService::defaultStageSlug(),
+            'defaultStatusSlug' => StatusService::defaultStatusSlug(),
+            // The server's list page size, so `/page/N` starts where it did.
+            'topicListPageSize' => TopicsView::pageSize(),
+            'wpMediaSettings'   => [
+                'maxUploadBytes'      => wp_max_upload_size(),
+                'bigImageThresholdPx' => (int) Hooks::applyFilter('big_image_size_threshold', 2560),
+            ],
+            // Both editors and the upload check read these, so a file or an image
+            // the portal lets through is one the server accepts. See PostingLimits.
+            'postingLimits' => PostingLimits::all(),
+            // The upload check's list of attachable files, from the same source
+            // as the server's, so the two cannot drift. See ExtensionPoints.
+            'attachmentTypes' => AttachmentValidatorService::attachmentTypes(),
+            // Sent with the page so the bell's badge is right on first paint
+            // instead of appearing a beat after the header draws. The portal
+            // polls for changes after that; this is only the starting value.
+            // Cached per member and dropped on write, so it costs a transient
+            // read on the overwhelming majority of page loads. (Ported from
+            // ShortCode's removed copy of this method — the two had drifted.)
+            'unreadNotifications' => $userInfo['isLoggedIn']
+                ? NotificationService::unreadCount(get_current_user_id())
+                : 0,
+        ];
+
+        // Same extension point Head uses for the admin payload. The portal
+        // needs it too, so another plugin can add its own keys to both.
+        return Hooks::applyFilter('bit_connect_localized_script', $frontendVars);
+    }
+
+    public function enqueueAssets()
+    {
+        // On a block theme WordPress prints the import map in wp_head, and only
+        // for modules already registered by then. The shortcode registers the
+        // module when it renders — during the_content, after wp_head — so on the
+        // shortcode page the bundle's bare `@wordpress/interactivity` import had
+        // no map to resolve against and the portal never hydrated. Classic
+        // themes print the map in the footer, which is why this stayed hidden.
+        // The bundle no longer imports that package (see registerAssets()), but
+        // registering early still puts the module in the head with everything
+        // else, and keeps the map in place should a dependency come back.
+        // Register up front when this request will render the shortcode; the
+        // routed portal pages already register on template_redirect, and
+        // registration is idempotent so the shortcode's later call is harmless.
+        if (self::embedsShortcode()) {
+            $this->registerAssets();
+        }
+
+        // Pre-mount styles and the crawler/human view toggle. Scoped to the
+        // requests that actually render the portal, because this method runs on
+        // every front-end request: PrePaint puts `bc-js` on `<html>`, which has
+        // no business on a page this plugin does not draw.
+        $rendersPortal = self::rendersPortal();
+
+        if ($rendersPortal) {
+            PrePaint::enqueue();
+        }
+
+        $configVariable = self::createConfigVariable();
+
+        // The app's first requests, answered in the page — see PortalPreload.
+        // Only where the portal is drawn: it runs those routes, which a page
+        // without the portal has no use for.
+        if ($rendersPortal) {
+            $configVariable['preload'] = PortalPreload::responses();
+            // wp_enqueue_scripts runs inside wp_head, at priority 1.
+            Hooks::addAction('wp_head', [PortalPreload::class, 'printChunkHints']);
+        }
+
+        // This inline global is the bundle's only config transport: the Vite
+        // build `define`s every bare SERVER_VARIABLES read to
+        // `window.bit_connect_` (see vite.config.client.mts + .env), so the
+        // payload must be on the page before the module executes. A
+        // script_module_data_* filter used to print the same payload a second
+        // time as JSON nothing read — that duplicate is gone.
+        // JSON_HEX_TAG: this runs on the public portal and the payload carries
+        // admin-authored copy (community title, promo text, login-page wording)
+        // plus the current member's display name. One `</script>` in any of
+        // them would close this inline block. See SeoMeta::head().
+        //
+        // Both halves are escaped at the call itself, which is where the
+        // directory's escaping review looks: `window["bit_connect_"]` is the
+        // same property the bundle's `window.bit_connect_` define reads,
+        // written in the form that lets the name go through wp_json_encode()
+        // like the payload does.
+        wp_register_script($this->slug . '-module-config', false, [], $this->version, ['in_footer' => false]);
+        wp_enqueue_script($this->slug . '-module-config');
+        wp_add_inline_script(
+            $this->slug . '-module-config',
+            \sprintf(
+                'window[%s]=%s;',
+                wp_json_encode(Config::VAR_PREFIX),
+                wp_json_encode($configVariable, JSON_HEX_TAG | JSON_HEX_AMP)
+            )
+        );
+
+        // Runs in the head, before the first paint — see ThemeBoot.
+        ThemeBoot::attach($this->slug . '-module-config');
+
+        if (Config::isDev()) {
+            wp_enqueue_script_module($this->slug . '-MODULE-vite-client-helper');
+            wp_enqueue_script_module($this->slug . '-MODULE-vite-client');
+            wp_enqueue_script_module($this->slug . '-MODULE-main');
+        } else {
+            wp_enqueue_script_module($this->slug . '-MODULE-main');
+            wp_enqueue_style($this->slug . '-styles');
+        }
+
+        // No wp_enqueue_media() here. The portal uploads through its own REST
+        // routes and never calls wp.media, and this method runs on every
+        // front-end request: the media library cost each page of the site about
+        // twenty scripts and its attachment queries. Only the admin needs it (Head).
+    }
+
+    /**
+     * Whether this request draws the portal.
+     *
+     * Both gates resolve on template_redirect, before wp_head — the routers
+     * claim the request, and SeoMeta is the belt to that braces for any route
+     * that renders without registering a matching router filter. PageCache
+     * reads this on template_redirect too, after the routers.
+     */
+    public static function rendersPortal(): bool
+    {
+        return self::embedsShortcode() || ShortCode::isServerRendered() || SeoMeta::meta() !== null;
+    }
+
+    /**
+     * Whether the requested page holds the `[bit-connect]` shortcode.
+     */
+    private static function embedsShortcode(): bool
+    {
+        $post = get_post();
+
+        return is_singular() && $post instanceof WP_Post && PortalLocation::embedsPortal((string) $post->post_content);
+    }
+
+    /**
+     * What one term of a taxonomy is called — "Tag" — translated.
+     */
+    private static function termLabel(string $taxonomy): string
+    {
+        $added = TopicTaxonomies::forTaxonomy($taxonomy);
+
+        if ($added !== null && $added['singular'] !== '') {
+            return $added['singular'];
+        }
+
+        $object = get_taxonomy($taxonomy);
+
+        return $object ? (string) ($object->labels->singular_name ?? $object->label) : '';
+    }
+
+    /**
+     * Each archive the portal serves, by the URL segment it answers to.
+     *
+     * The filter key is the topics endpoint's parameter for that taxonomy:
+     * this plugin's own are fixed, and an added one is named by TopicTaxonomies.
+     *
+     * @return array<string, array{filter: string, taxonomy: string, follow: string, label: string}>
+     */
+    private static function portalArchives(): array
+    {
+        $filters = [
+            Taxonomies::TOPIC_TYPES->value => 'topic-types',
+            Taxonomies::TAGS->value        => 'tags',
+            Taxonomies::STAGES->value      => 'stages',
+            Taxonomies::STATUSES->value    => 'statuses',
+        ];
+
+        foreach (TopicTaxonomies::all() as $param => $entry) {
+            $filters[$entry['taxonomy']] = $param;
+        }
+
+        $archives = [];
+
+        foreach (PortalTaxonomies::map() as $segment => $taxonomy) {
+            if (isset($filters[$taxonomy])) {
+                $archives[PortalTaxonomies::slugFor($segment)] = [
+                    'filter'   => $filters[$taxonomy],
+                    'taxonomy' => $taxonomy,
+                    // The follow target a term is followed by, or '' for one
+                    // that cannot be. The archive page offers Follow on these.
+                    'follow' => FollowService::targetTypeForTaxonomy($taxonomy),
+                    // What one term is called, so that button can say what it
+                    // follows: "Follow tag". An added taxonomy names itself.
+                    'label' => self::termLabel($taxonomy),
+                ];
+            }
+        }
+
+        return $archives;
+    }
+}
